@@ -1,12 +1,12 @@
 {
   "name": "mac-computer-use",
   "description": "Operate Mac apps, browser pages and iOS web views with the mac-cu MCP server. Use for desktop UI tasks without a better API or CLI, web view inspection, or mac-cu setup and modes. Route iOS Simulator app launch, logs, test data and change verification through simulator-pilot.",
-  "version": "1.26.1",
+  "version": "1.27.0",
   "author": {
     "name": "KakaoTalk iOS Team"
   },
   "skills": "./skills/",
-  "repository": "https://github.com/oozoofrog/oozoofrog-plugin",
+  "repository": "https://github.com/oozoofrog/mac-pilot",
   "interface": {
     "displayName": "Mac Computer Use",
     "shortDescription": "Operate Mac apps, browser pages and iOS web views",

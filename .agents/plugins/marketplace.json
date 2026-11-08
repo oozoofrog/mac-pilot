@@ -1,0 +1,32 @@
+{
+  "name": "mac-pilot",
+  "interface": {
+    "displayName": "Mac Pilot"
+  },
+  "plugins": [
+    {
+      "name": "mac-computer-use",
+      "source": {
+        "source": "local",
+        "path": "./mac-computer-use"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    },
+    {
+      "name": "simulator-pilot",
+      "source": {
+        "source": "local",
+        "path": "./simulator-pilot"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

@@ -4,4 +4,4 @@ Operate Mac apps, browser pages and iOS web views with the mac-cu MCP server. Us
 
 See [skill and setup](skills/mac-computer-use/SKILL.md) and [installation](skills/mac-computer-use/README.md).
 
-The source package preserves the supplied layout, author and MIT attribution. The distribution mirror omits generated executables, caches, development evidence and private runtime state.
+The source package preserves the supplied layout, author and MIT attribution. This directory is the installable package; there is no duplicate distribution mirror. Releases omit generated executables, caches, development evidence and private runtime state.

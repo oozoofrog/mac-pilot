@@ -5,8 +5,8 @@ iOS 시뮬레이터 작업의 단일 입구입니다. 앱 빌드·설치·실행
 ## 설치
 
 ```bash
-/plugin install simulator-pilot@oozoofrog-plugin
-/plugin install mac-computer-use@oozoofrog-plugin   # 화면 조작에 필요 (mac-cu MCP 서버)
+/plugin install simulator-pilot@mac-pilot
+/plugin install mac-computer-use@mac-pilot   # 화면 조작에 필요 (mac-cu MCP 서버)
 ```
 
 - `sim-pilot` CLI는 처음 쓸 때 스킬이 `swiftc`로 빌드해 `~/.local/bin/sim-pilot`에 둡니다.

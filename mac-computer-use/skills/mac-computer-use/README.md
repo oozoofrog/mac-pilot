@@ -40,8 +40,8 @@ This folder started as a copy of
 
 ## Install
 
-1. Install the plugin: `claude plugin install mac-computer-use@oozoofrog-plugin` (Claude Code) or
-   `codex plugin add mac-computer-use@oozoofrog-plugin` (Codex).
+1. Install the plugin: `claude plugin install mac-computer-use@mac-pilot` (Claude Code) or
+   `codex plugin add mac-computer-use@mac-pilot` (Codex).
 2. Ask the agent to "set up mac-cu". It runs `scripts/setup.py --agent claude` or
    `scripts/setup.py --agent codex` from the installed plugin folder. The script builds
    `~/Library/Application Support/mac-cu/mac-cu.app`, registers it and starts it: a menu bar icon

@@ -510,7 +510,7 @@ func showUpdateGuidance() {
     NSApplication.shared.setActivationPolicy(.accessory)
     let alert = NSAlert()
     alert.messageText = "mac-cu 수동 업데이트"
-    alert.informativeText = "호스트에서 mac-computer-use@oozoofrog-plugin을 업데이트한 뒤, 설치된 스킬의 scripts/setup.py --agent codex (또는 claude)를 다시 실행하고 새 세션을 시작하세요."
+    alert.informativeText = "호스트에서 mac-computer-use@mac-pilot을 업데이트한 뒤, 설치된 스킬의 scripts/setup.py --agent codex (또는 claude)를 다시 실행하고 새 세션을 시작하세요."
     NSApp.activate(ignoringOtherApps: true)
     alert.runModal()
 }

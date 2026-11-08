@@ -9,9 +9,9 @@ From the repository root:
 ```sh
 swiftc -typecheck mac-computer-use/skills/mac-computer-use/scripts/mac-cu-src/*.swift
 bash mac-computer-use/tests/check-simulator-gestures.sh
-python3 scripts/sync_skill_mirrors.py --package mac-computer-use --write
-python3 -m unittest discover -s scripts/tests -v
-python3 scripts/sync_skill_mirrors.py --package mac-computer-use
+python3 scripts/validate_distribution.py
+python3 scripts/validate_distribution.py
+python3 scripts/validate_distribution.py
 git diff --check
 ```
 
@@ -91,3 +91,7 @@ python3 mac-computer-use/tests/check-simulator-window-live.py --preview --udid 1
 배포 unittest 48개, 전체 Swift 타입 검사, 네이티브 제스처/도킹 검사, 판단 서비스 모의 검사와 응답 formatter 검사, 원본·미러 스킬 검증 및 정식 동기화 검사를 실행했다. 로컬 Git 이력 정리 후 원본·미러의 비공개 설정과 모든 Git 객체의 해당 식별자를 재검사했다. 로컬 refs/해시가 변경됐으며 원격 이력은 변경하거나 푸시하지 않았다. 사용자 파일과 무관한 문서를 보존했다.
 
 최종 지속 실행본은 `/tmp/mac-cu-device-final-preview-20261108-v2/LCD Window Check.app`이며 준비 기록의 LCD alpha는 1, 제목 막대는 false, 실제 framebuffer는 true였다. 최종 생산 Swift 소스 전체를 `source-hashes.json`과 대조해 일치를 확인했다. `window.png`와 `toolbar.png`는 WindowServer에서 다시 캡처해 읽었고, 실제 설정 캡처와 함께 채팅의 HTML 렌더로 표시했다. 개발 앱은 실행 상태로 남겼다.
+
+## Independent repository migration
+
+The packages and this historical evidence moved into Mac Pilot. Canonical package directories are the delivery paths; there is no duplicate Plugin mirror. Past mirror checks remain historical evidence. Development artifacts stay ignored and local. Newly packaged synthetic gesture helpers live under `mac-computer-use/tests/gesture-probe/`, so clean checkouts can run the checks.

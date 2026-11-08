@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>제스처 랩</title>
+<style>
+:root{--safe-top:env(safe-area-inset-top,0px);--safe-right:env(safe-area-inset-right,0px);--safe-bottom:env(safe-area-inset-bottom,0px);--safe-left:env(safe-area-inset-left,0px)}
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#192a43;background:#edf2f9;-webkit-user-select:none;user-select:none}
+body{background-image:radial-gradient(#bfcee1 1px,transparent 1px);background-size:22px 22px}
+button,input{font:inherit}button{cursor:pointer;touch-action:manipulation}button:focus-visible,input:focus-visible{outline:3px solid #1769e8;outline-offset:4px}
+header{height:calc(var(--safe-top) + 78px);padding:calc(var(--safe-top) + 15px) calc(var(--safe-right) + 18px) 15px calc(var(--safe-left) + 18px);display:flex;align-items:center;justify-content:space-between;background:#edf2f9cc}
+h1{font-size:23px;letter-spacing:-.9px;margin:0;font-weight:780;display:flex;gap:10px;align-items:center}
+.mark{width:24px;height:24px;border:2px solid #2a64d8;border-radius:8px;transform:rotate(-12deg);box-shadow:3px 3px 0 #8fb6ff}
+#reset{border:1px solid #cbd8e9;border-radius:13px;padding:10px 13px;background:#fff;color:#234b81;font-size:12px;font-weight:700;min-height:42px}
+#stage{position:absolute;top:calc(var(--safe-top) + 78px);right:var(--safe-right);bottom:calc(var(--safe-bottom) + 124px);left:var(--safe-left);overflow:hidden;touch-action:none;-webkit-touch-callout:none}
+.axis{position:absolute;left:50%;top:50%;width:250px;height:250px;border:1px solid #d2deed;border-radius:50%;transform:translate(-50%,-50%);pointer-events:none}
+.axis:before,.axis:after{content:"";position:absolute;background:#d2deed}.axis:before{height:1px;left:-25px;right:-25px;top:50%}.axis:after{width:1px;top:-25px;bottom:-25px;left:50%}
+#card{--card:#247bfa;--dark:#2041b6;position:absolute;left:50%;top:50%;width:156px;height:186px;margin:-93px 0 0 -78px;will-change:transform;pointer-events:none;perspective:800px}
+.faces{height:100%;width:100%;position:relative;transform-style:preserve-3d;transition:transform .25s;border-radius:23px}
+.faces.flipped{transform:rotateY(180deg)}
+.face{position:absolute;inset:0;border-radius:23px;backface-visibility:hidden;box-shadow:0 20px 38px #254e9c38,inset 0 1px #ffffff66;background:linear-gradient(145deg,var(--card),var(--dark));border:1px solid #ffffff66;display:grid;place-items:center;color:white}
+.back{transform:rotateY(180deg);background:linear-gradient(30deg,var(--dark),var(--card))}
+.front svg{width:88px;height:88px;filter:drop-shadow(0 3px 10px #003a9c55)}
+.corner-dots{position:absolute;top:18px;left:18px;display:flex;gap:4px}.corner-dots i{width:5px;height:5px;border-radius:50%;background:#ffffff88}
+.grid{display:grid;grid-template-columns:repeat(3,18px);gap:9px;transform:rotate(15deg)}.grid i{width:18px;height:18px;border:1px solid #ffffff99;border-radius:5px}
+.faces.holding{box-shadow:0 0 0 7px #a278ff55}.faces.flash{animation:flash .28s}@keyframes flash{50%{filter:brightness(1.5)}}
+.selection{position:absolute;inset:-9px;border:1px solid #3b7bf0;opacity:0}.selected .selection{opacity:1}
+.selection:before,.selection:after{content:"";position:absolute;width:7px;height:7px;border:2px solid #3b7bf0;background:white}.selection:before{top:-4px;left:-4px}.selection:after{bottom:-4px;left:-4px}
+.handle{position:absolute;width:40px;height:40px;padding:10px;border:0;border-radius:50%;background:#fff;color:#2c63c8;box-shadow:0 2px 10px #28497425;pointer-events:auto;touch-action:none;display:none}
+.selected .handle{display:block}.handle svg{width:100%;height:100%;stroke:currentColor;fill:none;stroke-width:1.8}
+#rotate-handle{top:-49px;left:calc(50% - 20px)}#rotate-handle:before{content:"";width:1px;height:14px;background:#3b7bf0;position:absolute;left:20px;bottom:-14px}
+#scale-handle{right:-20px;bottom:-20px}
+#palette{position:absolute;bottom:-57px;left:50%;transform:translateX(-50%);display:none;gap:7px;padding:7px;background:#fff;border:1px solid #d3e0ef;border-radius:30px;box-shadow:0 6px 20px #294c8e22;pointer-events:auto}
+#palette.open{display:flex}.color{width:31px;height:31px;border:0;border-radius:50%;color:white;touch-action:manipulation}.color[aria-pressed=true]:after{content:"✓";font-weight:800}
+footer{position:absolute;left:calc(var(--safe-left) + 12px);right:calc(var(--safe-right) + 12px);bottom:calc(var(--safe-bottom) + 12px);padding:14px 18px 12px;background:#fffffff2;border:1px solid #fff;border-radius:19px;box-shadow:0 6px 25px #18355810;display:grid;gap:12px}
+label{display:grid;grid-template-columns:44px 1fr 48px;align-items:center;gap:10px;font-size:12px;color:#4f6584}
+input[type=range]{width:100%;height:25px;margin:0;accent-color:#2b6ae3}
+output{font-weight:750;text-align:right;color:#193962;font-variant-numeric:tabular-nums}
+@media(min-width:700px){header{height:calc(var(--safe-top) + 76px);padding-left:calc(var(--safe-left) + 26px);padding-right:calc(var(--safe-right) + 26px)}footer{max-width:570px;left:calc(var(--safe-left) + (100% - var(--safe-left) - var(--safe-right))/2);right:auto;width:calc(100% - var(--safe-left) - var(--safe-right) - 32px);transform:translateX(-50%)}}
+@media(max-height:500px){header{height:calc(var(--safe-top) + 58px);padding-top:calc(var(--safe-top) + 8px);padding-bottom:8px}#stage{top:calc(var(--safe-top) + 58px);bottom:calc(var(--safe-bottom) + 80px)}footer{grid-template-columns:1fr 1fr;gap:18px;padding:10px 16px}label{grid-template-columns:32px 1fr 40px;gap:8px}#card{width:100px;height:120px;margin:-60px 0 0 -50px}#rotate-handle{top:-38px}#palette{bottom:-49px}.front svg{width:65px;height:65px}.axis{width:170px;height:170px}}
+@media(prefers-reduced-motion:reduce){.faces{transition:none}.faces.flash{animation:none}}
+</style>
+<header><h1><span class="mark" aria-hidden="true"></span>제스처</h1><button id="reset" aria-label="카드 위치와 크기, 회전 초기화">초기화</button></header>
+<main id="stage" aria-label="제스처 카드" tabindex="0">
+ <div class="axis"></div>
+ <div id="card" class="selected">
+  <div class="faces" id="face">
+   <div class="face front"><div class="corner-dots"><i></i><i></i><i></i></div><svg viewBox="0 0 100 100" aria-hidden="true"><g fill="none" stroke="white"><circle cx="50" cy="50" r="31" opacity=".35"/><circle cx="50" cy="50" r="16" stroke-width="1.5"/><path d="M50 7v26M50 67v26M7 50h26M67 50h26" opacity=".8"/><path d="m50 29 6 15 15 6-15 6-6 15-6-15-15-6 15-6Z" fill="white" fill-opacity=".2"/></g></svg></div>
+   <div class="face back"><div class="grid"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+  </div>
+  <div class="selection"></div>
+  <button id="rotate-handle" class="handle" data-handle="rotate" aria-label="카드 회전"><svg viewBox="0 0 24 24"><path d="M20 10a8 8 0 1 0-2 8M20 3v7h-7"/></svg></button>
+  <button id="scale-handle" class="handle" data-handle="scale" aria-label="카드 크기 조절"><svg viewBox="0 0 24 24"><path d="M5 12V5h7M19 12v7h-7M5 5l5 5M19 19l-5-5"/></svg></button>
+  <div id="palette" role="group" aria-label="카드 색상">
+   <button class="color" data-color="blue" style="background:#246bea" aria-label="파랑" aria-pressed="true"></button>
+   <button class="color" data-color="pink" style="background:#c43c8c" aria-label="분홍" aria-pressed="false"></button>
+   <button class="color" data-color="orange" style="background:#ca6b22" aria-label="주황" aria-pressed="false"></button>
+  </div>
+ </div>
+</main>
+<footer aria-label="카드 조절">
+ <label for="zoom"><span>크기</span><input id="zoom" type="range" min="25" max="300" value="100" aria-label="카드 크기"><output id="scale" for="zoom">100%</output></label>
+ <label for="rotation"><span>회전</span><input id="rotation" type="range" min="-180" max="180" value="0" aria-label="카드 회전"><output id="angle" for="rotation">0°</output></label>
+</footer>
+<script>
+(function(global){
+  function fitGesture(before,after){
+    var pairs=before.map(function(a){return [a,after.find(function(b){return b.id===a.id})]}).filter(function(p){return p[1]});
+    if(!pairs.length)return {x:0,y:0,scale:1,angle:0};
+    function center(index){return pairs.reduce(function(c,p){return {x:c.x+p[index].x/pairs.length,y:c.y+p[index].y/pairs.length}},{x:0,y:0})}
+    var a=center(0),b=center(1),dot=0,cross=0,norm=0;
+    pairs.forEach(function(p){var x=p[0].x-a.x,y=p[0].y-a.y,u=p[1].x-b.x,v=p[1].y-b.y;dot+=x*u+y*v;cross+=x*v-y*u;norm+=x*x+y*y});
+    return {x:b.x-a.x,y:b.y-a.y,scale:norm>0?Math.hypot(dot,cross)/norm:1,angle:norm>0?Math.atan2(cross,dot):0};
+  }
+  global.fitGesture=fitGesture;
+  if(!global.document)return;
+  var $=function(id){return document.getElementById(id)},stage=$('stage'),card=$('card'),face=$('face'),points=new Map(),baseline=[],basePose,session=null,lastTap=null,holdTimer,scheduled=false,lastMoveAudit=0;
+  var state=global.probeState={active:0,maxTouches:0,events:0,trustedEvents:0,untrustedEvents:0,touchStarts:0,touchEnds:0,cancels:0,native:{active:0,max:0,events:0},pose:{x:0,y:0,scale:1,angle:0},sessions:[],recent:[],selected:true,flipped:false,color:'blue',gesture:'입력 대기'};
+  function audit(phase,extra){var data=Object.assign({kind:'dom',phase:phase,active:points.size,pose:Object.assign({},state.pose)},extra||{});global.webkit?.messageHandlers?.probe?.postMessage(data)}
+  function rebase(){baseline=Array.from(points.values()).map(function(p){return Object.assign({},p)});basePose=Object.assign({},state.pose)}
+  function fit(){
+    var after=Array.from(points.values()),d=fitGesture(baseline,after);
+    if(session?.mode&&baseline.length===1&&after.length===1){
+      var r=stage.getBoundingClientRect(),cx=r.left+r.width/2+basePose.x,cy=r.top+r.height/2+basePose.y;
+      var a={x:baseline[0].x-cx,y:baseline[0].y-cy},b={x:after[0].x-cx,y:after[0].y-cy};
+      state.pose=Object.assign({},basePose);
+      if(session.mode==='scale')state.pose.scale=Math.max(.25,Math.min(3,basePose.scale*Math.hypot(b.x,b.y)/Math.max(1,Math.hypot(a.x,a.y))));
+      else state.pose.angle=basePose.angle+Math.atan2(b.y,b.x)-Math.atan2(a.y,a.x);
+    }else state.pose={x:basePose.x+d.x,y:basePose.y+d.y,scale:Math.max(.25,Math.min(3,basePose.scale*d.scale)),angle:basePose.angle+d.angle};
+  }
+  function render(){
+    scheduled=false;var p=state.pose;
+    card.style.transform='translate('+p.x+'px,'+p.y+'px) rotate('+p.angle+'rad) scale('+p.scale+')';
+    card.classList.toggle('selected',state.selected);face.classList.toggle('flipped',state.flipped);
+    var degrees=Math.round(p.angle*180/Math.PI),normalized=((degrees+180)%360+360)%360-180;
+    $('zoom').value=Math.round(p.scale*100);$('rotation').value=normalized;
+    $('scale').textContent=Math.round(p.scale*100)+'%';$('angle').textContent=normalized+'°';
+  }
+  function draw(){if(!scheduled){scheduled=true;requestAnimationFrame(render)}}
+  function flash(){face.classList.remove('flash');void face.offsetWidth;face.classList.add('flash')}
+  function finish(cancelled){
+    clearTimeout(holdTimer);face.classList.remove('holding');
+    if(!session)return;
+    var duration=performance.now()-session.start,taps=0;
+    if(!cancelled&&!session.held&&duration<360&&session.travel<14){
+      var now=performance.now(),starts=Array.from(session.starts.values()),center=starts.reduce(function(c,p){return {x:c.x+p.x/starts.length,y:c.y+p.y/starts.length}},{x:0,y:0});
+      taps=lastTap&&now-lastTap.time<450&&lastTap.fingers===session.peak&&Math.hypot(center.x-lastTap.x,center.y-lastTap.y)<30?lastTap.count%3+1:1;
+      lastTap={time:now,fingers:session.peak,count:taps,x:center.x,y:center.y};state.gesture=session.peak+'손가락 · '+taps+'회 탭';if(taps===1)state.selected=session.mode?true:!state.selected;else if(taps===2){state.flipped=!state.flipped;state.selected=true}else reset();flash();
+    }else if(cancelled){state.gesture='입력 중단';lastTap=null}
+    else if(session.held&&session.travel<14){state.gesture=session.peak+'손가락 · 길게 누르기';lastTap=null}
+    else{state.gesture=session.peak+'손가락 · 이동·확대·회전';lastTap=null}
+    var summary={fingers:session.peak,duration:duration,taps:taps,held:session.held,travel:session.travel,cancelled:cancelled,pose:Object.assign({},state.pose)};
+    state.sessions.push(summary);if(state.sessions.length>100)state.sessions.shift();
+    state.recent.push(state.gesture);if(state.recent.length>4)state.recent.shift();
+    audit('session',summary);session=null;draw();
+  }
+  function input(event,phase){
+    if(event.target.closest('[data-color]'))return;
+    event.preventDefault();state.events++;event.isTrusted?state.trustedEvents++:state.untrustedEvents++;
+    var p={id:event.pointerId,x:event.clientX,y:event.clientY};
+    if(phase==='down'){
+      if(!points.size){session={start:performance.now(),peak:0,travel:0,held:false,cancelled:false,starts:new Map(),mode:event.target.closest('[data-handle]')?.dataset.handle};clearTimeout(holdTimer)}
+      points.set(p.id,p);state.touchStarts++;session.starts.set(p.id,p);session.peak=Math.max(session.peak,points.size);state.maxTouches=Math.max(state.maxTouches,points.size);
+      stage.setPointerCapture(event.pointerId);$('palette').classList.remove('open');rebase();state.gesture=points.size+'손가락 입력 중';
+      clearTimeout(holdTimer);holdTimer=setTimeout(function(){if(session&&session.travel<14&&points.size){session.held=true;face.classList.add('holding');state.gesture=points.size+'손가락 · 길게 누르는 중';state.selected=true;$('palette').classList.add('open');draw()}},550);
+    }else if(points.has(p.id)){
+      points.set(p.id,p);fit();
+      var start=session?.starts.get(p.id);if(start)session.travel=Math.max(session.travel,Math.hypot(p.x-start.x,p.y-start.y));
+      if(session&&session.travel>14){clearTimeout(holdTimer);state.gesture=points.size+'손가락으로 조작 중'}
+      if(phase==='up'||phase==='cancel'){
+        points.delete(p.id);state.touchEnds++;if(phase==='cancel'){state.cancels++;session.cancelled=true}
+        if(points.size)rebase();else finish(session.cancelled);
+      }
+    }
+    state.active=points.size;
+    if(phase!=='move'||performance.now()-lastMoveAudit>50){audit(phase,{pointerId:p.id,pointerType:event.pointerType,trusted:event.isTrusted,x:p.x,y:p.y});lastMoveAudit=performance.now()}
+    draw();
+  }
+  stage.addEventListener('pointerdown',function(e){input(e,'down')});
+  stage.addEventListener('pointermove',function(e){if(points.has(e.pointerId))input(e,'move')});
+  stage.addEventListener('pointerup',function(e){input(e,'up')});
+  stage.addEventListener('pointercancel',function(e){input(e,'cancel')});
+  function reset(){if(points.size)return;state.pose={x:0,y:0,scale:1,angle:0};state.gesture='카드 초기화';state.selected=true;state.flipped=false;$('palette').classList.remove('open');face.classList.remove('holding');lastTap=null;draw()}
+  $('reset').addEventListener('click',reset);global.resetProbe=reset;
+  $('zoom').addEventListener('input',function(e){state.pose.scale=Number(e.target.value)/100;draw()});
+  $('rotation').addEventListener('input',function(e){state.pose.angle=Number(e.target.value)*Math.PI/180;draw()});
+  document.querySelectorAll('[data-color]').forEach(function(button){button.addEventListener('click',function(e){
+    e.stopPropagation();state.color=button.dataset.color;var colors={blue:['#247bfa','#2041b6'],pink:['#db57b0','#81329d'],orange:['#ed9c41','#bc4b2e']}[state.color];
+    card.style.setProperty('--card',colors[0]);card.style.setProperty('--dark',colors[1]);
+    document.querySelectorAll('[data-color]').forEach(function(b){b.setAttribute('aria-pressed',String(b===button))});$('palette').classList.remove('open');
+  })});
+
+  global.nativeProbeUpdate=function(value){state.native=value;draw()};
+  global.addEventListener('resize',function(){if(!points.size){state.pose.x=0;state.pose.y=0;draw()}});
+  render();
+})(globalThis);
+</script>
+</html>

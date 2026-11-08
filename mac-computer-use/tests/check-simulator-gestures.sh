@@ -27,6 +27,6 @@ swiftc -parse-as-library "$source/SimulatorPreviewLayout.swift" "$source/Simulat
 "$out/windows"
 swiftc -parse-as-library "$source/SimulatorWindowOcclusion.swift" "$here/simulator-window-occlusion-selfcheck.swift" -o "$out/occlusion"
 "$out/occlusion"
-python3 "$here/../docs/development/gesture-probe/check_trace.py" --self-test
-node "$here/../docs/development/gesture-probe/playground-selfcheck.mjs"
+python3 "$here/gesture-probe/check_trace.py" --self-test
+node "$here/gesture-probe/playground-selfcheck.mjs"
 python3 "$here/setup-icon-selfcheck.py"
