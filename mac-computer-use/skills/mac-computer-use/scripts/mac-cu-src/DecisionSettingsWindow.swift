@@ -30,8 +30,9 @@ final class DecisionSettingsWindow: NSObject, NSWindowDelegate {
     func show() {
         precondition(Thread.isMainThread)
         if window == nil { build() }
-        load()
-        window?.center(); window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        if window?.isVisible != true { load(); window?.center() }
+        window?.makeFirstResponder(model)
+         window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
     }
     private func build() {
         let height = min(820, (NSScreen.main?.visibleFrame.height ?? 920) - 80)
@@ -39,6 +40,9 @@ final class DecisionSettingsWindow: NSObject, NSWindowDelegate {
                          styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         w.title = "OpenAI Decisions 설정"; w.delegate = self; w.isReleasedWhenClosed = false
         w.minSize = NSSize(width: 600, height: 500)
+        model.setAccessibilityLabel("Decisions 모델")
+        key.setAccessibilityLabel("새 OpenAI API 키 · 비워두면 기존 키 유지")
+        status.setAccessibilityLabel("연결 확인 상태")
         model.placeholderString = "gpt-6-luna"
         key.placeholderString = "새 키 입력 (비워두면 기존 키 유지)"
         let info = NSTextField(wrappingLabelWithString: "메뉴바 설정은 데몬 환경을 사용합니다. 키 우선순위는 Keychain → 현재 MCP 세션 → 데몬 환경이며, 저장 모델은 환경보다 우선합니다. 연결 확인은 저장된 설정으로 합성 텍스트만 전송합니다. 요청·결과에는 API 키와 인증 헤더를 표시하지 않습니다.")
@@ -50,7 +54,7 @@ final class DecisionSettingsWindow: NSObject, NSWindowDelegate {
             return row
         }
         func button(_ title: String, _ action: Selector) -> NSButton { NSButton(title: title, target: self, action: action) }
-        probeButton = button("연결 확인", #selector(probe))
+        probeButton = button("저장된 설정 연결 확인", #selector(probe))
         cancelProbeButton = button("확인 취소", #selector(cancelProbe)); cancelProbeButton.isEnabled = false
         let buttons = NSStackView(views: [probeButton, cancelProbeButton, button("취소", #selector(cancel)), button("저장", #selector(save))])
         buttons.orientation = .horizontal; buttons.spacing = 8
@@ -98,7 +102,7 @@ final class DecisionSettingsWindow: NSObject, NSWindowDelegate {
             model.stringValue = c.model
             key.stringValue = ""; deleteKey.state = .off
             source.stringValue = "설정 출처: \(c.source)\n키 출처: \(c.keySource)"
-        } catch { status.stringValue = error.localizedDescription }
+        } catch { source.stringValue = "설정 출처 확인 실패"; status.stringValue = error.localizedDescription }
     }
     @objc private func save() {
         do {
@@ -132,6 +136,7 @@ final class DecisionSettingsWindow: NSObject, NSWindowDelegate {
                     self.task = nil
                     self.probeButton.isEnabled = true; self.cancelProbeButton.isEnabled = false
                     let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000_000
+                    defer { NSAccessibility.post(element: self.status, notification: .valueChanged) }
                     switch result {
                     case .success(let answer):
                         self.status.stringValue = answer["connection"]?["type"] as? String == "predicate" ? "연결 확인 성공" : "연결 실패: 테스트 요청이 거부되었습니다."

@@ -52,10 +52,15 @@ struct DecisionSettingsSelfcheck {
         settings.show()
         let window = NSApp.windows.first { $0.title == "OpenAI Decisions 설정" }!
         defer { window.close() }
+        let draftModel = descendants(window.contentView!).compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel() == "Decisions 모델" }!
+        draftModel.stringValue = "draft-model"
+        settings.show()
+        assert(draftModel.stringValue == "draft-model", "Reopening a visible settings window preserves its draft")
+        draftModel.stringValue = "gpt-6-luna"
         window.orderOut(nil)
         window.contentView!.layoutSubtreeIfNeeded()
         let views = descendants(window.contentView!)
-        let probe = views.compactMap { $0 as? NSButton }.first { $0.title == "연결 확인" }!
+        let probe = views.compactMap { $0 as? NSButton }.first { $0.title == "저장된 설정 연결 확인" }!
         let cancel = views.compactMap { $0 as? NSButton }.first { $0.title == "확인 취소" }!
         let request = views.compactMap { $0 as? NSTextView }.first { $0.accessibilityLabel() == "연결 확인 요청" }!
         let result = views.compactMap { $0 as? NSTextView }.first { $0.accessibilityLabel() == "연결 확인 결과 · 검증된 응답" }!

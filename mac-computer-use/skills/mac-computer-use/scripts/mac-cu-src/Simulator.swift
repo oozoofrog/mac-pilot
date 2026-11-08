@@ -345,15 +345,15 @@ func simulatorScreen(_ displays: [[String: Any]], targets: [String: UInt64], pos
     }
     let foldable = integrated.count > 1
     let rotation = on["currentOrientation"] as? String ?? "rot0"
-    if !foldable && rotation == "rot0" { return nil }
+    if !foldable && rotation == "rot0" && pose == nil { return nil }
     let target = foldable ? (on["uniqueId"] as? String).flatMap { targets[$0] } : 0
     guard let target else { throw ToolError("The active screen has no known touchscreen. Refresh the device connection.") }
     var screen = ActiveScreen(id: "\(on["displayId"] ?? "")", name: on["name"] as? String ?? "main", target: target,
         unrotated: CGSize(width: bounds[1][0].doubleValue / scale, height: bounds[1][1].doubleValue / scale),
         rotation: rotation, foldable: foldable, primary: on["primary"] as? Bool ?? false)
-    if foldable, let pose {
+    if let pose {
         screen.framebufferRotation = rotation
-        screen.rotation = pose.screenRotation(inner: !screen.primary)
+        screen.rotation = pose.screenRotation(inner: foldable && !screen.primary)
     }
     return screen
 }
@@ -889,7 +889,7 @@ private func simulatorDeviceTool(_ arguments: [String: Any], device: NSObject) t
         // as MCP's absolute orientations. The UI must not compute it from a fixed cover framebuffer.
         let direction = arguments["direction"] as? String
         let absolute = (arguments["orientation"] as? String).flatMap { SimulatorOrientation(rawValue: $0.lowercased()) }
-        guard (direction == "clockwise" && arguments["orientation"] == nil) || (direction == nil && absolute != nil) else {
+        guard (["clockwise", "counterclockwise"].contains(direction ?? "") && arguments["orientation"] == nil) || (direction == nil && absolute != nil) else {
             throw ToolError("orientation is one of: portrait, landscape-left, landscape-right, upside-down.")
         }
         guard let before = raw.flatMap(SimulatorRotationObservation.read) else {
@@ -899,8 +899,10 @@ private func simulatorDeviceTool(_ arguments: [String: Any], device: NSObject) t
         var state = simulatorRotationStates[id] ?? SimulatorRotationState()
         state.observe(before)
         let assumedPortrait = direction != nil && state.reference == nil
-        let target = absolute ?? state.nextClockwise
-        try state.deliver(target, after: before, presentsDevice: before.foldable) {
+        let origin = state.reference ?? .portrait
+        let target = absolute ?? (direction == "counterclockwise" ? origin.counterclockwise : origin.clockwise)
+        let signedTurns = origin.signedQuarterTurns(to: target, direction: direction)
+        try state.deliver(target, after: before, presentsDevice: true) {
             if let link {
                 // A barrier proves local delivery only, not guest acknowledgement or screen rotation.
                 try link.deviceControl("orientation-picker-control", "enum", target.picker)
@@ -910,19 +912,20 @@ private func simulatorDeviceTool(_ arguments: [String: Any], device: NSObject) t
             }
         }
         simulatorRotationStates[id] = state
-        let lane = simulatorObserver(id), ticket = lane.invalidate()
+        simulatorObserver(id).invalidate()
         // Successful local delivery commits host geometry before passive guest observation.
         if let raw, let presented = try simulatorScreen(raw, targets: touchscreenTargets[id] ?? [:], pose: state.presentation) {
             let window = DispatchQueue.main.sync { simulatorWindows[id] }
             DispatchQueue.main.async { [weak window] in
-                if lane.isCurrent(ticket) { window?.show(presented) }
+                if let window, simulatorWindows[id] === window { window.presentRotation(presented, signedQuarterTurns: signedTurns) }
             }
         }
         var detail: [String: Any] = ["requestedOrientation": target.rawValue, "screenConfirmed": false,
             "assumedPortrait": assumedPortrait, "screenChanged": false, "delivered": true,
             "confirmationPending": true, "screenOrientation": before.rotation]
-        if before.foldable { detail["presentationOrientation"] = target.screenRotation(inner: !before.primary) }
-        let basis = assumedPortrait ? " No reliable starting pose was available; this clockwise request used portrait as its starting reference." : ""
+        detail["presentationOrientation"] = target.screenRotation(inner: before.foldable && !before.primary)
+        detail["signedQuarterTurns"] = signedTurns
+        let basis = assumedPortrait ? " No reliable starting pose was available; this relative request used portrait as its starting reference." : ""
         var result = text("Delivered orientation request \(target.rawValue). Guest orientation confirmation is pending; the last observed framebuffer was \(before.rotation).\(basis) The front app turns only to the orientations it supports.")
         result["structuredContent"] = ["rotation": detail]
         return result

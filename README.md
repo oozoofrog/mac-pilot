@@ -27,7 +27,7 @@ Installing the Plugin alone does not register mac-cu MCP. Follow [installation a
 
 | Package | Version | Scope |
 | --- | --- | --- |
-| [Mac Computer Use](mac-computer-use/skills/mac-computer-use/SKILL.md) | 1.29.3 | Mac apps, browsers, web views and native simulator screen controls |
+| [Mac Computer Use](mac-computer-use/skills/mac-computer-use/SKILL.md) | 1.30.0 | Mac apps, browsers, web views and native simulator screen controls |
 | [Simulator Pilot](simulator-pilot/skills/simulator-pilot/SKILL.md) | 1.8.2 | Simulator app launch, logs, test data and change verification |
 
 `mac-computer-use`: Operate Mac apps, browser pages and iOS web views with the mac-cu MCP server. Use for desktop UI tasks without a better API or CLI, web view inspection, or mac-cu setup, modes and simulator preparation. Route iOS Simulator app launch, logs, test data and change verification through simulator-pilot.

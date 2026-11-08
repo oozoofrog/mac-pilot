@@ -19,6 +19,14 @@ func runSimulatorObservationBridgeCheck() -> Never {
         let ticket = lane.ticket
         let raw: [[String: Any]] = [["type": ["integrated": [:]], "active": true, "displayId": 1,
             "currentOrientation": "rot90", "bounds": [[0,0],[600,900]], "pointScale": 3, "primary": true]]
+        for pose in SimulatorOrientation.allCases {
+            let projected = try! simulatorScreen(raw,targets:[:],pose:pose)!
+            precondition(projected.rotation == pose.screenRotation(inner:false) && projected.guestRotation == "rot90")
+            let point = CGPoint(x:projected.points.width*0.3,y:projected.points.height*0.6)
+            let normalized = projected.normalized(point)
+            precondition(normalized.x >= 0 && normalized.x <= 1 && normalized.y >= 0 && normalized.y <= 1)
+        }
+        print("PASS Phone host pose remains distinct from guest framebuffer on all four axes")
         let fresh = try! handleQueue.sync { try activeScreen(of: device, readback: raw) }
         precondition(fresh?.rotation == "rot90")
         precondition(!lane.isCurrent(ticket), "Synchronous external read must revoke older passive sample")

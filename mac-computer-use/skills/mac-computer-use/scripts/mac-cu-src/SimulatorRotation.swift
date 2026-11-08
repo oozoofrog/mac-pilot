@@ -13,6 +13,14 @@ enum SimulatorOrientation: String, CaseIterable {
         case .landscapeLeft: return .portrait
         }
     }
+    var counterclockwise: Self { Self.allCases[(Self.allCases.firstIndex(of: self)! + 3) % 4] }
+    /// Resolve intent on the serialized delivery lane, never from wrapped view angles.
+    func signedQuarterTurns(to target: Self, direction: String? = nil) -> Int {
+        if direction == "clockwise" { return 1 }
+        if direction == "counterclockwise" { return -1 }
+        let delta = (Self.allCases.firstIndex(of: target)! - Self.allCases.firstIndex(of: self)! + 4) % 4
+        return delta == 3 ? -1 : delta
+    }
     var picker: String { self == .upsideDown ? "pud" : rawValue }
     var devicectl: String {
         switch self {

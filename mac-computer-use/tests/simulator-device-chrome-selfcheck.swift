@@ -33,6 +33,9 @@ struct SimulatorDeviceChromeSelfcheck {
         let grip = content.chrome.grip
         let gripCenter = grip.convert(CGPoint(x: grip.bounds.midX, y: grip.bounds.midY), to: content)
         assert(content.hitTest(gripCenter) === grip, "Handle labels must remain draggable and never become LCD input")
+        for point in [CGPoint(x: 12, y: 20), CGPoint(x: grip.bounds.width - 4, y: 20)] {
+            assert(content.hitTest(grip.convert(point, to: content)) === grip, "Raised handle must route caption and label hits to the grip")
+        }
         let resize = content.chrome.resize
         let resizeCenter = resize.convert(CGPoint(x: resize.bounds.midX, y: resize.bounds.midY), to: content)
         assert(content.hitTest(resizeCenter) === resize)
@@ -60,13 +63,14 @@ struct SimulatorDeviceChromeSelfcheck {
             chrome.controls.needsLayout = true; chrome.rail.needsLayout = true
             chrome.controls.layoutSubtreeIfNeeded(); chrome.rail.layoutSubtreeIfNeeded()
             for button in buttons { assert(button.frame.width >= 44 && button.frame.height >= 44) }
-            let bottom = descendants(chrome.rail).compactMap { $0 as? SimulatorToolbarButton }.filter { $0.title != "응답" }
+            let bottom = descendants(chrome.rail).compactMap { $0 as? SimulatorToolbarButton }
+            assert(bottom.count == 6 && bottom.allSatisfy { $0.imagePosition == .imageOnly && $0.accessibilityLabel() != nil && $0.toolTip != nil })
             for scroll in descendants(chrome.rail).compactMap({ $0 as? NSScrollView }) {
                 assert((scroll.documentView?.frame.height ?? 0) <= scroll.contentSize.height+0.5)
             }
             assert(bottom.allSatisfy { $0.frame.height >= 44 && $0.frame.width >= 44 })
         }
-        for button in buttons { assert(button.frame.width >= 44 && button.frame.height >= 44 && button.accessibilityLabel() != nil) }
+        for button in buttons { assert(button.frame.width >= 44 && button.frame.height >= 44 && button.accessibilityLabel() != nil && button.imagePosition == .imageOnly) }
         chrome.controls.frame.size.height = 160
         chrome.controls.needsLayout = true; chrome.controls.layoutSubtreeIfNeeded()
         let column = descendants(chrome.controls).compactMap { $0 as? NSScrollView }.first!
@@ -100,6 +104,15 @@ struct SimulatorDeviceChromeSelfcheck {
         chrome.showFeedback("저장 실패",failed: true)
         let feedback = descendants(chrome.rail).compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel() == "시뮬레이터 조작 결과" }!
         assert(feedback.stringValue.contains("저장 실패") && feedback.textColor == .systemRed)
+        assert(feedback.isHidden, "No persistent status footer")
+        let more = buttons.first { $0.title == "더보기" }!
+        assert((more.accessibilityValue() as? String)?.contains("저장 실패") == true && more.contentTintColor == .systemRed)
+        var responseAnchor: NSView?
+        chrome.onResponse = { responseAnchor = $0 }
+        let responseMenu = chrome.moreMenu()
+        let responseItem = responseMenu.items.first { $0.title == "최근 응답…" }!
+        assert(NSApp.sendAction(responseItem.action!, to: responseItem.target, from: responseItem))
+        assert(responseAnchor === more, "Response history remains reachable from More")
         chrome.updateRecording(true,caption: "정지 0:03")
         assert(buttons.contains { $0.title == "정지 0:03" })
         chrome.updateDevice(name: "Fixture",runtime: "iOS 27.2",connected: false,foldable: true,isWatch: false,rotation: "rot0")
@@ -127,6 +140,44 @@ struct SimulatorDeviceChromeSelfcheck {
                 if !focused { assert(viewport.contains(layout.controls) && viewport.contains(layout.rail) && viewport.contains(layout.resize)) }
             }
         }
-        print("PASS device chrome: borderless focus eligibility, opaque body, transparent/handle/LCD/resize hit separation, focus recovery, usable controls, backend-driven rotation, busy gating, capture selection/failure feedback and display bounds.")
+        for size in [CGSize(width: 340, height: 590), CGSize(width: 500, height: 720), CGSize(width: 760, height: 650)] {
+            for screen in [CGSize(width: 320,height: 600), CGSize(width: 540,height: 720), CGSize(width: 600,height: 320), CGSize(width: 720,height: 540)] {
+                let g = simulatorDeviceLayout(in: size, screen: screen, bezel: 5, toolsVisible: false)
+                let viewport = CGRect(origin: .zero, size: size)
+                assert([g.body,g.handle,g.controls,g.rail,g.resize].allSatisfy { viewport.contains($0) })
+                assert(abs(g.handle.minY-g.body.maxY) < 0.01 && abs(g.controls.minX-g.body.maxX) < 0.01 && abs(g.rail.maxY-g.body.minY) < 0.01)
+                assert(!g.lcd.intersects(g.controls) && !g.lcd.intersects(g.rail) && !g.controls.intersects(g.resize) && !g.rail.intersects(g.resize))
+                assert(g.controls.height >= 44 && g.rail.height >= 52)
+            }
+        }
+        // An aspect-fit body can place the row at a quarter point on Retina.
+        // Exercise layout after a run-loop turn without showing/activating it.
+        content.focused = false
+        for size in [CGSize(width: 500,height: 760), CGSize(width: 340,height: 590), CGSize(width: 760,height: 650)] {
+            window.setContentSize(size); window.center()
+            for screen in [CGSize(width: 320,height: 520), CGSize(width: 520,height: 320)] {
+                content.screen = screen; content.needsLayout = true; content.layoutSubtreeIfNeeded()
+                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+                let row = descendants(content.chrome.rail).compactMap { $0 as? NSScrollView }.first!
+                let pixelTolerance = 0.5 / window.backingScaleFactor + 0.001
+                func checkTaskRow() {
+                    let clip = row.contentView.bounds
+                    assert(abs(clip.origin.y) <= pixelTolerance, "Task-row offset exceeds backing-pixel rounding: \(clip)")
+                    let document = row.documentView!
+                    assert(document.frame.intersection(clip).height >= 44 - pixelTolerance,
+                           "Pixel alignment must preserve the full icon row")
+                    assert(document.subviews.allSatisfy { $0.frame.height >= 44 && $0.frame.width >= 44 })
+                }
+                checkTaskRow()
+                for glass in [false,true] {
+                    for group in [content.body,content.chrome.handle,content.chrome.controls,content.chrome.rail] { group.usesGlass = glass }
+                    content.layoutSubtreeIfNeeded()
+                    assert(!content.chrome.handle.clipsToBounds && !content.chrome.controls.clipsToBounds && !content.chrome.rail.clipsToBounds,
+                           "Solid and glass attachment caps must not be clipped back into separate capsules")
+                    checkTaskRow()
+                }
+            }
+        }
+        print("PASS device chrome: borderless focus eligibility, opaque body, transparent/handle/LCD/resize hit separation, icon-only targets/response menu, pixel-aligned task rows, unclipped material joins, focus recovery, backend-driven rotation, busy gating, capture selection/failure feedback and display bounds.")
     }
 }

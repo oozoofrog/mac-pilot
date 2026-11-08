@@ -3,6 +3,14 @@ import CoreGraphics
 
 @main struct SimulatorRotationSelfcheck {
     static func main() {
+        for pose in SimulatorOrientation.allCases {
+            assert(pose.signedQuarterTurns(to:pose.clockwise,direction:"clockwise") == 1)
+            assert(pose.signedQuarterTurns(to:pose.counterclockwise,direction:"counterclockwise") == -1)
+            assert(pose.signedQuarterTurns(to:pose.counterclockwise) == -1)
+            assert(pose.signedQuarterTurns(to:pose) == 0)
+        }
+        assert(SimulatorOrientation.landscapeLeft.signedQuarterTurns(to:.portrait,direction:"clockwise") == 1)
+        assert(SimulatorOrientation.portrait.signedQuarterTurns(to:.landscapeLeft,direction:"counterclockwise") == -1)
         let cover = SimulatorRotationObservation(display: "1", rotation: "rot0", foldable: true, primary: true)
         func inner(_ pose: SimulatorOrientation) -> SimulatorRotationObservation {
             .init(display: "0", rotation: pose.screenRotation(inner: true), foldable: true, primary: false)

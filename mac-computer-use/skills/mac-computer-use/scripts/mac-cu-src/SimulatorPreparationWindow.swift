@@ -421,7 +421,7 @@ final class SimulatorPreparationWindow: NSObject, NSWindowDelegate, NSTableViewD
                     self.apply(value.inventory, selected: value.selected)
                     if !silent { self.status.stringValue = value.message }
                 case .failure(let error):
-                    self.status.stringValue = "실패 · \(operationName)\n\(String(error.localizedDescription.prefix(180)))"
+                    self.status.stringValue = "실패 · \(operationName)\n\(String(error.localizedDescription.prefix(180)))" + (self.inventory.devices.isEmpty ? "" : "\n목록은 마지막 확인값입니다. 새로고침으로 다시 확인하세요.")
                     self.log.string += "\n" + error.localizedDescription
                     self.retryButton.isHidden = false
                 }

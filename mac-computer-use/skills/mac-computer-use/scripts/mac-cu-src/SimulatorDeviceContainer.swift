@@ -87,6 +87,16 @@ let simulatorHandleSpace: CGFloat = 56
 let simulatorControlSpace: CGFloat = 80
 let simulatorRailSpace: CGFloat = 88
 
+private func simulatorAttachmentShoulder(_ body: CGSize, bezel: CGFloat) -> CGFloat {
+    min(28, min(body.width, body.height) * 0.08 + bezel)
+}
+
+private func simulatorAttachedScroller(_ body: CGSize, bezel: CGFloat) -> CGFloat {
+    let width = min(272, max(1, body.width))
+    return width - 8 < 264 && NSScroller.preferredScrollerStyle == .legacy
+        ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) : 0
+}
+
 func simulatorLegacyLCDContentSize(forLCD lcd: CGSize, bezel: CGFloat, toolsVisible: Bool, focused: Bool = false, externalToolbar: Bool = false) -> CGSize {
     let tools = simulatorToolboxSize(forLCD: lcd, bezel: bezel)
     let mainWidth = max(simulatorChromeWidth, lcd.width + 2 * bezel + (focused || externalToolbar ? 0 : simulatorRailSpace))
@@ -139,7 +149,8 @@ func simulatorLegacyDeviceLayout(in size: CGSize, screen: CGSize, bezel: CGFloat
 func simulatorLCDContentSize(forLCD lcd: CGSize, bezel: CGFloat, toolsVisible: Bool, focused: Bool = false, externalToolbar: Bool = false) -> CGSize {
     if toolsVisible || externalToolbar { return simulatorLegacyLCDContentSize(forLCD: lcd, bezel: bezel, toolsVisible: toolsVisible, focused: focused, externalToolbar: externalToolbar) }
     let right: CGFloat = focused || externalToolbar ? 0 : simulatorRailSpace
-    let bottom: CGFloat = focused ? 0 : simulatorControlSpace
+    let bodySize = CGSize(width: lcd.width + 2 * bezel, height: lcd.height + 2 * bezel)
+    let bottom: CGFloat = focused ? 0 : 60 + simulatorAttachedScroller(bodySize, bezel: bezel)
     let width = max(simulatorChromeWidth, lcd.width + 2 * bezel) + right
     return CGSize(width: width + 32, height: max(lcd.height + 2*bezel, focused ? 0 : 332) + 32 + simulatorHandleSpace + bottom)
 }
@@ -148,11 +159,14 @@ func simulatorDeviceLayout(in size: CGSize, screen: CGSize, bezel: CGFloat, tool
     if toolsVisible || externalToolbar { return simulatorLegacyDeviceLayout(in: size, screen: screen, bezel: bezel, toolsVisible: toolsVisible, focused: focused, lcdSizeLimit: lcdSizeLimit, externalToolbar: externalToolbar) }
     let aspect = max(1,screen.width) / max(1,screen.height)
     let right: CGFloat = focused || externalToolbar ? 0 : simulatorRailSpace
-    let barWidth = max(1,min(380,size.width-32))
-    let scroller = barWidth-8 < 360 && NSScroller.preferredScrollerStyle == .legacy ? NSScroller.scrollerWidth(for: .regular,scrollerStyle: .legacy) : 0
-    let barHeight: CGFloat = 72+scroller
-    let bottom: CGFloat = focused ? 0 : barHeight+8
     let availableWidth = max(1,size.width-32-right-2*bezel)
+    let tentativeHeight = max(1,min(availableWidth/aspect, size.height-32-simulatorHandleSpace-(focused ? 0 : 60)-2*bezel, lcdSizeLimit?.height ?? .greatestFiniteMagnitude))
+    let tentativeBody = CGSize(width: tentativeHeight*aspect+2*bezel, height: tentativeHeight+2*bezel)
+    // Use the same content-fit scroller allowance as the inverse sizing path;
+    // otherwise opening/resizing can progressively shrink the LCD in legacy mode.
+    let scroller = focused ? 0 : simulatorAttachedScroller(tentativeBody, bezel: bezel)
+    let barHeight: CGFloat = 52+scroller
+    let bottom: CGFloat = focused ? 0 : barHeight+8
     let availableHeight = max(1,size.height-32-simulatorHandleSpace-bottom)
     let height = max(1,min(availableWidth/aspect,availableHeight-2*bezel,lcdSizeLimit?.height ?? .greatestFiniteMagnitude))
     let lcdSize = CGSize(width: height*aspect,height: height)
@@ -160,13 +174,24 @@ func simulatorDeviceLayout(in size: CGSize, screen: CGSize, bezel: CGFloat, tool
     let left = (size.width-mainWidth-right)/2
     let top = size.height-16-simulatorHandleSpace
     let body = CGRect(x: left+(mainWidth-lcdSize.width-2*bezel)/2,y: top-lcdSize.height-2*bezel,width: lcdSize.width+2*bezel,height: lcdSize.height+2*bezel)
-    let bottomY = max(16,top-availableHeight-bottom+4)
+    // Place the host controls against the fitted body, not against the window's
+    // reserved envelope. The body may be much smaller when width limits it.
+    let bottomY = body.minY - barHeight
+    let shoulder = simulatorAttachmentShoulder(body.size, bezel: bezel)
+    let handleWidth = min(304, max(1, body.width - 2 * shoulder))
+    let handleX = body.midX - handleWidth / 2
+    let barWidth = min(272, max(1, body.width))
+    let railX = body.midX - barWidth / 2
+    let controlRows = max(1, floor((body.height - shoulder - 48) / 44))
+    let controlsHeight = min(CGFloat(actionCount), controlRows) * 44 + 8
+    let controlScroller = CGFloat(actionCount) > controlRows && NSScroller.preferredScrollerStyle == .legacy
+        ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) : 0
     return SimulatorDeviceLayout(body: body,lcd: body.insetBy(dx: bezel,dy: bezel),
         tools: CGRect(x: body.maxX+simulatorToolboxGap,y: body.minY,width: simulatorToolboxWidth,height: min(availableHeight,simulatorToolboxHeight)),
-        handle: CGRect(x: left,y: top+16,width: mainWidth+right,height: 40),
-        controls: CGRect(x: left+mainWidth+12,y: top-min(CGFloat(actionCount)*44+8,max(1,availableHeight-44)),width: 76,height: min(CGFloat(actionCount)*44+8,max(1,availableHeight-44))),
-        rail: CGRect(x: left+(mainWidth+right-barWidth)/2,y: bottomY,width: barWidth,height: barHeight),
-        resize: CGRect(x: left+mainWidth+18,y: bottomY+barHeight+4,width: 36,height: 36))
+        handle: CGRect(x: handleX,y: body.maxY,width: handleWidth,height: 44),
+        controls: CGRect(x: body.maxX,y: body.maxY-shoulder-controlsHeight,width: 56+controlScroller,height: controlsHeight),
+        rail: CGRect(x: railX,y: bottomY,width: barWidth,height: barHeight),
+        resize: CGRect(x: body.maxX+20,y: body.minY+2,width: 36,height: 36))
 }
 
 /// Keep the entire device, handle and controls on the destination display after moves and resizes.

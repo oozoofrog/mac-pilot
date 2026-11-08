@@ -37,8 +37,30 @@ struct SimulatorHostActionsSelfcheck {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fake.path)
         let actions = SimulatorHostActions(deviceID: "00000000-0000-0000-0000-000000000001", executable: fake, timeout: 2)
         var states: [(String, Bool)] = [], recordings: [(Bool, String)] = []
+        var settingUpdates: [(String, SimulatorSettingUpdate)] = []
+        var busy = false
+        actions.onSetting = { settingUpdates.append(($0, $1)) }
+        actions.onBusy = { busy = $0 }
         actions.onState = { states.append(($0, $1)) }
         actions.onRecording = { recordings.append(($0, $1)) }
+        var setting = SimulatorSettingState()
+        setting.receive(.finished(actual: "light", error: nil)); setting.receive(.applying("dark"))
+        precondition(setting.confirmed == "light" && setting.pending && setting.requested == "dark")
+        setting.receive(.finished(actual: "light", error: "mismatch"))
+        precondition(!setting.pending && setting.requested == "dark" && setting.error != nil)
+        precondition(SimulatorHostActions.confirmedValue("unknown", option: "appearance") == nil)
+        precondition(SimulatorHostActions.confirmedValue("increment", option: "content_size") == nil)
+        precondition(SimulatorHostActions.confirmedValue("extra-extra-large", option: "content_size") != nil)
+        actions.readEnvironment()
+        precondition(busy)
+        actions.run(option: "appearance", value: "light") // Read admission rejects concurrent apply.
+        wait { !busy }
+        precondition(settingUpdates.count == 6)
+        for (option, update) in settingUpdates.suffix(3) {
+            if case .finished(let actual, let error) = update { precondition(option == "appearance" ? actual == "dark" && error == nil : actual == nil && error != nil) }
+            else { preconditionFailure("Missing terminal read state") }
+        }
+        settingUpdates.removeAll()
         actions.run(option: "location", value: "91,0")
         wait { states.contains { $0.1 } }
         states.removeAll()

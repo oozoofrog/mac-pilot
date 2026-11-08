@@ -93,6 +93,16 @@ func simulatorToolboxViewRequest(_ input: String) -> [String: Any] {
 
 final class SimulatorToolboxView: NSView {
     var onRun: ([String: Any]) -> Void = { _ in }
+    var onPresentReport: ((NSPopover, NSView, NSView) -> Void)?
+    var onShowPersistentResult: () -> Void = {}
+    private let section = NSSegmentedControl(labels: ["검사", "결과"], trackingMode: .selectOne, target: nil, action: nil)
+    private var resultsSelected = false
+    private var reportBody: NSScrollView!
+    private let reportRoot = NSView(frame: CGRect(x: 0, y: 0, width: 380, height: 500))
+    private let continueResult = NSButton(title: "검사 도구에서 계속 보기", target: nil, action: nil)
+    private let retryButton = NSButton(title: "같은 입력으로 재시도", target: nil, action: nil)
+    private let pasteRecovery = NSButton(title: "같은 글자 붙여넣기…", target: nil, action: nil)
+    private var inspectionLabels: [NSControl: NSTextField] = [:]
     var onAvailabilityChanged: (Bool) -> Void = { _ in }
     var confirmAction: (String) -> Bool = SimulatorToolboxView.confirm
     private(set) var screenSize = CGSize(width: 1, height: 1)
@@ -257,14 +267,41 @@ final class SimulatorToolboxView: NSView {
     /// Reuse the original inspection controls and drafts, with one window owner.
     func useInspectionPresentation() {
         inspectionPresentation = true
+        section.target = self; section.action = #selector(changeSection); section.selectedSegment = 0
+        section.setAccessibilityLabel("검사 작업 영역"); addSubview(section)
         for item in components {
             item.glass.usesGlass = false
-            if ["button.home","button.lock","button.siri","rotate","hinge","type","paste","key","screenshot"].contains(actionNames[item.control] ?? "") {
+            if ["button.home","button.lock","button.siri","rotate","hinge","type","paste","key","crown"].contains(actionNames[item.control] ?? "") {
                 item.glass.isHidden = true
+            }
+        }
+        for item in components where !item.glass.isHidden {
+            if let field = item.control as? NSTextField {
+                let label = NSTextField(labelWithString: (field.placeholderString ?? "").replacingOccurrences(of: " ⏎", with: ""))
+                label.font = .systemFont(ofSize: 11, weight: .medium)
+                item.glass.content.addSubview(label); inspectionLabels[field] = label
+                field.isBordered = true; field.drawsBackground = true
             }
         }
         needsLayout = true
     }
+    @objc private func changeSection() { selectResults(section.selectedSegment == 1) }
+    func selectResults(_ selected: Bool) {
+        guard inspectionPresentation else { return }
+        report.close(); resultsSelected = selected; section.selectedSegment = selected ? 1 : 0
+        if selected { reportBody.removeFromSuperview(); addSubview(reportBody); continueResult.isHidden = true }
+        else { reportBody.removeFromSuperview(); reportRoot.addSubview(reportBody); reportBody.frame = reportRoot.bounds; continueResult.isHidden = false }
+        for item in components {
+            let retained = !["button.home","button.lock","button.siri","rotate","hinge","type","paste","key","crown"].contains(actionNames[item.control] ?? "")
+            item.glass.isHidden = selected || !retained
+        }
+        needsLayout = true; layoutSubtreeIfNeeded(); updateInteraction()
+    }
+    func focusInspection() {
+        let first: NSView? = resultsSelected ? result : components.first { !$0.glass.isHidden && $0.control is NSTextField }?.control
+        window?.makeKey(); if let first { window?.makeFirstResponder(first) }
+    }
+    @objc private func continueInInspection() { report.close(); onShowPersistentResult() }
 
     func setFloatingPresentation(_ visible: Bool) {
         expanded = visible
@@ -302,12 +339,13 @@ final class SimulatorToolboxView: NSView {
             return components.map { item in
                 let width = max(1,bounds.width-24)
                 if let index = fields.firstIndex(where: { $0.control === item.control }) {
-                    return CGRect(x: 12,y: bounds.height-54-CGFloat(index)*54,width: width,height: 40)
+                    return CGRect(x: 12,y: bounds.height-102-CGFloat(index)*58,width: width,height: 54)
                 }
                 if let index = pads.firstIndex(where: { $0.control === item.control }) {
-                    return CGRect(x: 12+CGFloat(index)*(width/3),y: bounds.height-358,width: width/3-8,height: 64)
+                    return CGRect(x: 12+CGFloat(index)*(width/3),y: bounds.height-408,width: width/3-8,height: 64)
                 }
-                return CGRect(x: 12,y: bounds.height-422,width: width,height: 44)
+                let isCapture = actionNames[item.control] == "screenshot"
+                return CGRect(x: isCapture ? 12 : 20 + width/2, y: bounds.height-464, width: width/2-8, height: 44)
             }
         }
         return components.map { item in
@@ -318,6 +356,10 @@ final class SimulatorToolboxView: NSView {
     override func layout() {
         super.layout()
         guard bounds.width >= 72, bounds.height > 0 else { return }
+        if inspectionPresentation {
+            section.frame = CGRect(x: 12, y: bounds.height - 38, width: max(1, bounds.width - 24), height: 28)
+            if resultsSelected { reportBody.frame = CGRect(x: 12, y: 12, width: max(1, bounds.width - 24), height: max(1, bounds.height - 58)) }
+        }
         let targets = frames()
         if transitioning && targets != animationTargets { animateFrames(targets) }
         for (index, item) in components.enumerated() {
@@ -331,6 +373,10 @@ final class SimulatorToolboxView: NSView {
         let inset: CGFloat = control is SimulatorGesturePad ? 4 : 10
         control.frame = CGRect(x: inset, y: (bounds.height - height) / 2, width: max(0, bounds.width - 2 * inset), height: height)
         control.needsDisplay = true
+        if let label = inspectionLabels[control] {
+            label.frame = CGRect(x: 10, y: bounds.height - 19, width: max(0, bounds.width - 20), height: 17)
+            control.frame = CGRect(x: 10, y: 4, width: max(0, bounds.width - 20), height: 26)
+        }
         if control === angle {
             let sliderHeight = min(24, max(0, (bounds.height - 6) / 2))
             let labelHeight = min(18, max(0, bounds.height - sliderHeight - 6))
@@ -431,6 +477,8 @@ final class SimulatorToolboxView: NSView {
     func start(_ activity: SimulatorToolActivity) {
         current = activity.id
         busy = true
+        result.string = "응답 대기 중…"
+        clearImages(); retryButton.isHidden = true; pasteRecovery.isHidden = true; status.menu = nil
         status.title = "사용 중 · " + activity.title
         argumentsLabel.stringValue = activity.source + " · " + activity.summary
         for item in components where actions[item.control] != nil {
@@ -438,9 +486,9 @@ final class SimulatorToolboxView: NSView {
         }
         updateInteraction()
     }
-    func finish(_ activity: SimulatorToolActivity, response: [String: Any]) {
+    @discardableResult func finish(_ activity: SimulatorToolActivity, response: [String: Any]) -> Bool {
         if current == nil { start(activity) }
-        guard current == activity.id else { return }
+        guard current == activity.id else { return false }
         busy = false
         if activity.source == "직접 조작" { manualPending = false }
         let failed = response["isError"] as? Bool == true
@@ -448,16 +496,21 @@ final class SimulatorToolboxView: NSView {
         status.title = state + " · " + activity.title
         history.insert(state + " · " + activity.source + " · " + activity.title, at: 0)
         history = Array(history.prefix(8))
-        recent.stringValue = history.joined(separator: "\n")
+        recent.stringValue = "최근 활동\n" + history.joined(separator: "\n")
         let content = response["content"] as? [[String: Any]] ?? []
         result.string = activity.action == "window" && !failed ? "LCD 창 열림" : content.compactMap { $0["text"] as? String }.joined(separator: "\n")
-        for child in images.arrangedSubviews { images.removeArrangedSubview(child); child.removeFromSuperview() }
-        for item in content where item["type"] as? String == "image" {
+        clearImages()
+        var imageLabel = "캡처 결과"
+        for item in content {
+            if let text = item["text"] as? String { imageLabel = String(text.suffix(300)); continue }
+            guard item["type"] as? String == "image" else { continue }
             guard let encoded = item["data"] as? String, let data = Data(base64Encoded: encoded), let image = NSImage(data: data) else { continue }
             let picture = NSImageView()
             picture.image = image
             picture.imageScaling = .scaleProportionallyUpOrDown
-            picture.setAccessibilityLabel("캡처 결과")
+            picture.setAccessibilityLabel(imageLabel)
+            let caption = NSTextField(wrappingLabelWithString: imageLabel); caption.font = .systemFont(ofSize: 11)
+            images.addArrangedSubview(caption)
             picture.heightAnchor.constraint(equalToConstant: 180).isActive = true
             images.addArrangedSubview(picture)
             picture.widthAnchor.constraint(equalTo: images.widthAnchor).isActive = true
@@ -478,13 +531,23 @@ final class SimulatorToolboxView: NSView {
             }
         }
         status.menu = menu
+        retryButton.isHidden = !(failed && activity.source == "직접 조작" && lastManual != nil)
+        pasteRecovery.isHidden = retryButton.isHidden || lastManual?["action"] as? String != "type"
         NSAccessibility.post(element: status, notification: .valueChanged)
+        return true
     }
     func submitFromChrome(_ arguments: [String: Any]) { submit(arguments, fromChrome: true) }
     func showResponse() { showReport(status) }
     func showResponse(from anchor: NSView) {
         if report.isShown { report.close() }
-        else { report.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxX) }
+        else {
+            if resultsSelected { selectResults(false) }
+            reportBody.frame = reportRoot.bounds
+            if let screen = anchor.window?.screen { report.contentSize = CGSize(width: min(380, screen.visibleFrame.width-32), height: min(500, screen.visibleFrame.height-48)) }
+            report.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            if let onPresentReport { onPresentReport(report, anchor, result) }
+            else { report.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxX) }
+        }
     }
     private func submit(_ arguments: [String: Any], fromChrome: Bool = false) {
         guard (fromChrome || acceptsInput), !busy, !manualPending else { return }
@@ -505,20 +568,28 @@ final class SimulatorToolboxView: NSView {
     private func fail(_ error: Error) {
         status.title = "입력 오류"
         result.string = error.localizedDescription
+        argumentsLabel.stringValue = "미전송 · 입력 내용을 확인하세요"
+        clearImages(); lastManual = nil; retryButton.isHidden = true; pasteRecovery.isHidden = true
         status.menu = nil
+        if inspectionPresentation { selectResults(true) }
     }
-    @objc private func retryLast() { if let lastManual { submit(lastManual) } }
+    private func clearImages() { for child in images.arrangedSubviews { images.removeArrangedSubview(child); child.removeFromSuperview() } }
+    @objc private func retryLast() { if let lastManual { submit(lastManual, fromChrome: true) } }
     @objc private func recoverTextInput() {
-        guard acceptsInput, let text = lastManual?["text"] as? String, !text.isEmpty, confirmAction("paste") else { return }
-        submit(["action": "paste", "text": text])
+        guard !busy, !manualPending, let text = lastManual?["text"] as? String, !text.isEmpty, confirmAction("paste") else { return }
+        submit(["action": "paste", "text": text], fromChrome: true)
     }
     @objc private func showReport(_ sender: NSButton) {
         guard sender.isEnabled else { return }
-        if report.isShown { report.close() }
-        else { report.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxX) }
+        if inspectionPresentation { selectResults(true); focusInspection() }
+        else { showResponse(from: sender) }
     }
     private func configureReport() {
-        let stack = NSStackView(views: [argumentsLabel])
+        retryButton.target = self; retryButton.action = #selector(retryLast); retryButton.isHidden = true
+        pasteRecovery.target = self; pasteRecovery.action = #selector(recoverTextInput); pasteRecovery.isHidden = true
+        continueResult.target = self; continueResult.action = #selector(continueInInspection)
+        let stack = NSStackView(views: [continueResult, argumentsLabel, retryButton, pasteRecovery])
+        result.string = "아직 응답이 없습니다. 검사나 기기 조작 후 여기에서 확인하세요."
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
@@ -548,7 +619,10 @@ final class SimulatorToolboxView: NSView {
                                      stack.topAnchor.constraint(equalTo: scroll.contentView.topAnchor, constant: 12)])
         for child in stack.arrangedSubviews { child.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
         let controller = NSViewController()
-        controller.view = scroll
+        reportBody = scroll
+        scroll.autoresizingMask = [.width, .height]
+        reportRoot.addSubview(scroll)
+        controller.view = reportRoot
         report.contentViewController = controller
         report.behavior = .transient
     }

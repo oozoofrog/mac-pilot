@@ -212,6 +212,10 @@ final class SimulatorPreviewWindow: NSObject, NSWindowDelegate {
         let attributes = caption.attributedStringValue.attributes(at: 0, effectiveRange: nil)
         caption.attributedStringValue = NSAttributedString(string: name, attributes: attributes)
         caption.toolTip = name
+        if let click = panel.contentView?.subviews.compactMap({ $0 as? SimulatorPreviewClickView }).first {
+            click.toolTip = "더블 클릭하면 \(name) 창을 전경으로 가져옵니다"
+            click.setAccessibilityLabel("\(name) 창을 전경으로 가져오기"); click.setAccessibilityHelp(click.toolTip)
+        }
     }
 
     func applyLayout(_ frame: CGRect) {

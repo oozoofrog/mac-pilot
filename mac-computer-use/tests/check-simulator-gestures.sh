@@ -24,9 +24,13 @@ swiftc -parse-as-library "$source/SimulatorHingeSlider.swift" "$here/native-self
 python3 "$here/native_check_support.py" --selfcheck "$out/hinge" --timeout 30
 swiftc -parse-as-library "$source/SimulatorHostActions.swift" "$here/native-selfcheck-entry.swift" "$here/simulator-host-actions-selfcheck.swift" -o "$out/host-actions"
 python3 "$here/native_check_support.py" --selfcheck "$out/host-actions" --timeout 30
-chrome=("$source/SimulatorRotation.swift" "$source/SimulatorHingeSlider.swift" "$source/SimulatorDeviceContainer.swift" "$source/SimulatorLCDContent.swift" "$source/SimulatorDeviceChrome.swift" "$source/SimulatorGesturePad.swift" "$source/SimulatorToolbox.swift" "$source/SimulatorToolbarDocking.swift")
+chrome=("$source/SimulatorHostActions.swift" "$source/SimulatorRotation.swift" "$source/SimulatorHingeSlider.swift" "$source/SimulatorDeviceContainer.swift" "$source/SimulatorLCDContent.swift" "$source/SimulatorDeviceChrome.swift" "$source/SimulatorGesturePad.swift" "$source/SimulatorToolbox.swift" "$source/SimulatorToolbarDocking.swift")
+swiftc -parse-as-library "${chrome[@]}" "$here/native-selfcheck-entry.swift" "$here/simulator-ui-state-selfcheck.swift" -o "$out/ui-state"
+python3 "$here/native_check_support.py" --selfcheck "$out/ui-state" --timeout 30
 swiftc -parse-as-library "${chrome[@]}" "$here/native-selfcheck-entry.swift" "$here/simulator-toolbox-selfcheck.swift" -o "$out/toolbox"
 python3 "$here/native_check_support.py" --selfcheck "$out/toolbox" --timeout 60
+swiftc -parse-as-library "${chrome[@]}" "$here/native-selfcheck-entry.swift" "$here/simulator-rotation-presentation-selfcheck.swift" -o "$out/rotation-presentation"
+python3 "$here/native_check_support.py" --selfcheck "$out/rotation-presentation" --timeout 30
 swiftc -parse-as-library "${chrome[@]}" "$here/native-selfcheck-entry.swift" "$here/simulator-device-chrome-selfcheck.swift" -o "$out/chrome"
 python3 "$here/native_check_support.py" --selfcheck "$out/chrome" --timeout 60
 swiftc -parse-as-library "${chrome[@]}" "$here/native-selfcheck-entry.swift" "$here/simulator-toolbar-interaction-selfcheck.swift" -o "$out/interaction"

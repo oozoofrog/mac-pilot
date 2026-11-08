@@ -14,7 +14,16 @@ func displays(of id: String, task: SimulatorPreparationTask? = nil) -> [[String:
     guard succeeded, let data = try? Data(contentsOf: file),
           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     else { return nil }
-    return (json["result"] as? [String: Any])?["displays"] as? [[String: Any]]
+    guard let raw = (json["result"] as? [String: Any])?["displays"] as? [[String: Any]] else { return nil }
+    return raw.map(normalizeSimulatorDisplay)
+}
+
+func normalizeSimulatorDisplay(_ display: [String: Any]) -> [String: Any] {
+    var result = display
+    if result["active"] == nil, let state = result["backlightState"] as? String {
+        result["active"] = state == "activeOn"
+    }
+    return result
 }
 
 struct SimulatorDisplayRefresh {

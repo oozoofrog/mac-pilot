@@ -18,7 +18,7 @@ final class SimulatorDeviceWindow: NSWindow {
 
 final class SimulatorMoveGrip: NSView {
     let label = NSTextField(labelWithString: "")
-    private let movement = NSTextField(labelWithString: "⠿ 이동")
+    private let movement = NSImageView()
     var onManipulate: () -> Void = {}
     var onEndManipulate: () -> Void = {}
     private var start: (point: CGPoint, origin: CGPoint)?
@@ -29,8 +29,8 @@ final class SimulatorMoveGrip: NSView {
         label.font = .systemFont(ofSize: 12, weight: .semibold)
         label.lineBreakMode = .byTruncatingMiddle
         addSubview(label)
-        movement.font = .systemFont(ofSize: 11, weight: .medium)
-        movement.textColor = .secondaryLabelColor
+        movement.image = NSImage(systemSymbolName: "arrow.up.and.down.and.arrow.left.and.right", accessibilityDescription: nil)
+        movement.contentTintColor = .labelColor
         movement.setAccessibilityElement(false)
         addSubview(movement)
         toolTip = "기기 이동 · 드래그"
@@ -42,8 +42,8 @@ final class SimulatorMoveGrip: NSView {
     required init?(coder: NSCoder) { fatalError() }
     override func layout() {
         super.layout()
-        movement.frame = CGRect(x: 10, y: 10, width: 44, height: max(0, bounds.height - 20))
-        label.frame = CGRect(x: 60, y: 10, width: max(0, bounds.width - 70), height: max(0, bounds.height - 20))
+        movement.frame = CGRect(x: 12, y: (bounds.height - 20) / 2, width: 20, height: 20)
+        label.frame = CGRect(x: 42, y: (bounds.height - 20) / 2, width: max(0, bounds.width - 48), height: 20)
     }
     override func hitTest(_ point: NSPoint) -> NSView? { bounds.contains(convert(point, from: superview)) ? self : nil }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .openHand) }
@@ -179,8 +179,8 @@ final class SimulatorDeviceChrome: NSObject, NSPopoverDelegate, NSTextFieldDeleg
     let angle = SimulatorHingeSlider(frame: .zero)
     private let angleLabel = NSTextField(labelWithString: "실제 각도 읽는 중…")
     private let draftLabel = NSTextField(labelWithString: "눈금 클릭 · 드래그로 세부 조절")
-    private let feedback = NSTextField(labelWithString: "준비됨")
-    private let responseButton = SimulatorToolbarButton()
+    private let feedback = NSTextField(labelWithString: "")
+    private var feedbackFailed = false
     private let rightScroll = NSScrollView()
     private let rightDocument = SimulatorToolbarColumn()
     private let bottomScroll = NSScrollView()
@@ -188,6 +188,31 @@ final class SimulatorDeviceChrome: NSObject, NSPopoverDelegate, NSTextFieldDeleg
     private let hinge = NSPopover()
     private let input = NSPopover()
     private let location = NSPopover()
+    private let environmentPopover = NSPopover()
+    private let viewPopover = NSPopover()
+    private weak var reportPopover: NSPopover?
+    private var escapeMonitor: Any?
+    private let keyboardCheck = NSButton(checkboxWithTitle: "Mac 키보드를 기기로 전달", target: nil, action: nil)
+    private let inputStatus = NSTextField(wrappingLabelWithString: "전송할 내용을 입력하세요")
+    private let locationStatus = NSTextField(wrappingLabelWithString: "입력한 좌표는 전송 전 초안입니다")
+    private var formActions: [NSButton] = []
+    private var environmentStates: [String: SimulatorSettingState] = [:]
+    private var environmentLabels: [String: NSTextField] = [:]
+    private let appearance = NSSegmentedControl(labels: ["라이트", "다크"], trackingMode: .selectOne, target: nil, action: nil)
+    private let contrast = NSButton(checkboxWithTitle: "대비 높이기", target: nil, action: nil)
+    private var sizeChoices: [NSButton] = []
+    private let sizeValues = ["small", "large", "extra-large", "accessibility-large"]
+    private var environmentRetry: NSButton!
+    private var viewChecks: [NSButton] = []
+    private let scaleLabel = NSTextField(labelWithString: "")
+    var focused = false
+    var displayScale = 100.0
+    private var confirmedOrientation: String?
+    var onReadEnvironment: () -> Void = {}
+    var currentDisplayScale: () -> Double = { 100 }
+    var onViewAction: (String, Int) -> Void = { _,_ in }
+    var hasOpenPopover: Bool { activePopover?.isShown == true }
+
     private var popoverOpeners: [ObjectIdentifier:NSView] = [:]
     private weak var activePopover: NSPopover?
     private var foldable = false
@@ -220,7 +245,8 @@ final class SimulatorDeviceChrome: NSObject, NSPopoverDelegate, NSTextFieldDeleg
     var onRecord: () -> Void = {}
     var onManage: () -> Void = {}
     var onCleanup: () -> Void = {}
-    private var unavailable: Bool { busy || hostBusy || !connected }
+    var presentationSuppressed = false { didSet { updateControls() } }
+    private var unavailable: Bool { busy || hostBusy || !connected || presentationSuppressed }
 
     override init() {
         super.init()
@@ -229,7 +255,7 @@ final class SimulatorDeviceChrome: NSObject, NSPopoverDelegate, NSTextFieldDeleg
         menuButton.title = ""; handle.content.addSubview(menuButton)
         handle.layoutContent = { [weak self] bounds in
             self?.grip.frame = CGRect(x: 0, y: 0, width: max(0, bounds.width - 44), height: bounds.height)
-            self?.menuButton.frame = CGRect(x: bounds.width - 44, y: 2, width: 42, height: bounds.height - 4)
+            self?.menuButton.frame = CGRect(x: bounds.width - 44, y: 0, width: 44, height: bounds.height)
         }
         configure(fold, title: "접기", symbol: "rectangle.split.2x1", action: #selector(showHinge))
         primary = [make("홈", "house", #selector(home)), make("회전", "rotate.right", #selector(rotate)), fold,
@@ -237,7 +263,7 @@ final class SimulatorDeviceChrome: NSObject, NSPopoverDelegate, NSTextFieldDeleg
                    make("잠금", "lock", #selector(lock)), make("더보기", "ellipsis", #selector(more))]
         rightScroll.drawsBackground = false; rightScroll.hasVerticalScroller = true; rightScroll.autohidesScrollers = true
         rightScroll.documentView = rightDocument; controls.content.addSubview(rightScroll)
-        for button in primary { rightDocument.addSubview(button) }
+        for button in primary { button.imagePosition = .imageOnly; rightDocument.addSubview(button) }
         controls.content.setAccessibilityRole(.toolbar)
         controls.setAccessibilityLabel("기기 동작 툴바")
         controls.layoutContent = { [weak self] bounds in
@@ -258,44 +284,46 @@ final class SimulatorDeviceChrome: NSObject, NSPopoverDelegate, NSTextFieldDeleg
                      make("환경⌄", "slider.horizontal.3", #selector(environment)), make("위치⌄", "location", #selector(showLocation)),
                      make("검사⌄", "viewfinder", #selector(inspection)), make("보기⌄", "macwindow", #selector(viewMenu))]
         auxiliary[1].setButtonType(.toggle)
+        auxiliary[1].alternateImage = auxiliary[1].image
+        auxiliary[1].alternateTitle = ""
         bottomScroll.drawsBackground = false; bottomScroll.hasHorizontalScroller = true; bottomScroll.hasVerticalScroller = false
         bottomScroll.autohidesScrollers = true; bottomScroll.horizontalScrollElasticity = .allowed
         bottomScroll.documentView = bottomDocument
-        for button in auxiliary { button.imagePosition = .imageLeading; bottomDocument.addSubview(button) }
+        for button in auxiliary { button.imagePosition = .imageOnly; bottomDocument.addSubview(button) }
         rail.content.addSubview(bottomScroll)
         feedback.font = .systemFont(ofSize: 11, weight: .medium)
         feedback.lineBreakMode = .byTruncatingMiddle
         feedback.setAccessibilityLabel("시뮬레이터 조작 결과")
+        feedback.isHidden = true
         rail.content.addSubview(feedback)
-        configure(responseButton, title: "응답", symbol: "text.bubble", action: #selector(response))
-        responseButton.imagePosition = .imageLeading
-        rail.content.addSubview(responseButton)
         rail.content.setAccessibilityRole(.toolbar)
         rail.setAccessibilityLabel("시뮬레이터 작업 툴바")
         rail.layoutContent = { [weak self] bounds in
             guard let self else { return }
-            let needsScroll = bounds.width-8 < 360
+            let needsScroll = bounds.width-8 < 264
             self.bottomScroll.hasHorizontalScroller = needsScroll
             let scroller: CGFloat = needsScroll && self.bottomScroll.scrollerStyle == .legacy ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) : 0
-            self.bottomScroll.frame = CGRect(x: 4,y: 24,width: max(0,bounds.width-8),height: 44+scroller)
+            let row = CGRect(x: 4,y: 4,width: max(0,bounds.width-8),height: 44+scroller)
+            // Align the viewport to backing pixels. NSClipView may still
+            // offset its bounds by half a pixel when ancestors are centered
+            // on fractional coordinates, without scrolling the task row.
+            self.bottomScroll.frame = self.rail.content.backingAlignedRect(row, options: .alignAllEdgesNearest)
             self.bottomScroll.tile()
             let oldX = self.bottomScroll.contentView.bounds.origin.x
-            let width: CGFloat = 360
+            let width: CGFloat = 264
             self.bottomDocument.frame = CGRect(x: 0,y: 0,width: width,height: 44)
             self.bottomScroll.tile()
             for (i, button) in self.auxiliary.enumerated() {
-                button.frame = CGRect(x: CGFloat(i)*60,y: 0,width: 60,height: 44)
+                button.frame = CGRect(x: CGFloat(i)*44,y: 0,width: 44,height: 44)
             }
             self.bottomScroll.contentView.scroll(to: CGPoint(x: min(max(0,oldX),max(0,width-self.bottomScroll.contentSize.width)),y: 0))
             self.bottomScroll.reflectScrolledClipView(self.bottomScroll.contentView)
-            self.feedback.frame = CGRect(x: 12, y: 4, width: max(0,bounds.width-82), height: 18)
-            self.responseButton.frame = CGRect(x: bounds.width-68, y: 0, width: 64, height: 24)
         }
-        configureHinge(); configureInput(); configureLocation()
+        configureHinge(); configureInput(); configureLocation(); configureEnvironment(); configureView(); installEscapeMonitor()
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(accessibilityChanged), name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
         accessibilityChanged(); updateControls()
     }
-    deinit { angleDeadline?.cancel(); NSWorkspace.shared.notificationCenter.removeObserver(self) }
+    deinit { if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }; angleDeadline?.cancel(); NSWorkspace.shared.notificationCenter.removeObserver(self) }
     private func configure(_ button: NSButton, title: String, symbol: String, action: Selector) {
         button.title = title
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 17, weight: .medium))
@@ -313,12 +341,17 @@ final class SimulatorDeviceChrome: NSObject, NSPopoverDelegate, NSTextFieldDeleg
         grip.setAccessibilityValue(grip.label.stringValue); grip.toolTip = grip.label.stringValue + " · 드래그로 이동"
         fold.isHidden = !foldable || usesFloatingModules
         primary[1].isHidden = isWatch
-        if !connected { closePopovers() }
+        confirmedOrientation = connected ? (["rot0":"portrait", "rot180":"upside-down", "rot90": foldable ? "landscape-left" : "landscape-right", "rot270": foldable ? "landscape-right" : "landscape-left"][rotation]) : nil
+        if !connected {
+            closePopovers()
+            if requestedAngle != nil { requestedAngle = nil; angleDeadline?.cancel(); angleFailed = true; draftLabel.stringValue = "! 연결 끊김 · 선택값 유지, 연결 후 재시도" }
+        }
         controls.needsLayout = true; updateControls()
     }
     func updateAngle(_ degrees: Double) {
         confirmedAngle = degrees
-        fold.title = "접기"; fold.setAccessibilityLabel("접기 · 실제 각도 \(Int(degrees.rounded()))도")
+        fold.title = "접기"; fold.imagePosition = .imageOnly
+        fold.setAccessibilityLabel("접기 · 실제 각도 \(Int(degrees.rounded()))도")
         angleLabel.stringValue = "확인값 \(Int(degrees.rounded()))°"
         if let requestedAngle, abs(requestedAngle - degrees) < 0.6 {
             self.requestedAngle = nil; angleDeadline?.cancel(); angleDeadline = nil; angleFailed = false; draftLabel.stringValue = "✓ 적용 확인됨"
@@ -330,13 +363,32 @@ final class SimulatorDeviceChrome: NSObject, NSPopoverDelegate, NSTextFieldDeleg
     func updateRecording(_ active: Bool, caption: String) {
         recording = active; primary[4].title = caption
         primary[4].image = NSImage(systemSymbolName: active ? "stop.circle.fill" : "record.circle", accessibilityDescription: nil)
+        primary[4].imagePosition = .imageOnly
         primary[4].setAccessibilityLabel(caption); primary[4].contentTintColor = active ? .systemRed : .labelColor
+        primary[4].toolTip = caption
         updateControls()
     }
     func showFeedback(_ message: String, failed: Bool = false) {
         feedback.stringValue = (failed ? "! " : "") + message; feedback.toolTip = message
         feedback.textColor = failed ? .systemRed : .labelColor
-        NSAccessibility.post(element: feedback, notification: .valueChanged)
+        feedbackFailed = failed
+        updateStatusButton()
+        NSAccessibility.post(element: primary[6], notification: .valueChanged)
+    }
+    private func updateStatusButton() {
+        let pending = busy || hostBusy || rotationCommandActive
+        let button = primary[6]
+        button.image = NSImage(systemSymbolName: pending ? "hourglass" : feedbackFailed ? "exclamationmark.circle" : "ellipsis", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 17, weight: .medium))
+        button.contentTintColor = feedbackFailed && !pending ? .systemRed : .labelColor
+        let status = pending ? "처리 중" : feedback.stringValue
+        button.toolTip = status.isEmpty ? "더보기" : "더보기 · " + status
+        button.setAccessibilityValue(status)
+        // More can be scrolled out in a short landscape window. Keep failures
+        // discoverable on the fixed device menu without restoring a footer.
+        menuButton.image = NSImage(systemSymbolName: pending ? "hourglass" : feedbackFailed ? "exclamationmark.circle" : "ellipsis.circle", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 17, weight: .medium))
+        menuButton.contentTintColor = button.contentTintColor
+        menuButton.toolTip = status.isEmpty ? "기기 메뉴" : "기기 메뉴 · " + status
+        menuButton.setAccessibilityValue(status)
     }
     func commandFinished(action: String, failed: Bool) {
         if action == "rotate" && failed { rotationFailed() }
@@ -347,6 +399,13 @@ final class SimulatorDeviceChrome: NSObject, NSPopoverDelegate, NSTextFieldDeleg
         }
     }
     func updateControls() {
+        keyboardCheck.state = keyboardEnabled ? .on : .off
+        for (index, value) in [focused, toolsVisible, keyboardEnabled, touchesVisible].enumerated() where index < viewChecks.count { viewChecks[index].state = value ? .on : .off }
+        scaleLabel.stringValue = "현재 크기 \(Int(displayScale.rounded()))% · 화면에 맞게 제한됨"
+        for button in formActions { button.isEnabled = !unavailable }
+        updateEnvironmentControls()
+        for button in auxiliary { button.isEnabled = true }
+        menuButton.isEnabled = true
         for button in primary { button.isEnabled = !unavailable }
         primary[1].isEnabled = !unavailable && !rotationCommandActive
         primary[4].isEnabled = recording || !unavailable
@@ -355,16 +414,44 @@ final class SimulatorDeviceChrome: NSObject, NSPopoverDelegate, NSTextFieldDeleg
         auxiliary[0].isEnabled = !unavailable; auxiliary[2].isEnabled = !unavailable; auxiliary[3].isEnabled = !unavailable
         auxiliary[1].state = touchesVisible ? .on : .off
         auxiliary[1].title = touchesVisible ? "터치 ✓" : "터치"
+        auxiliary[1].imagePosition = .imageOnly
         auxiliary[1].contentTintColor = touchesVisible ? .controlAccentColor : .labelColor
+        auxiliary[1].toolTip = touchesVisible ? "터치 표시 끄기" : "터치 표시 켜기"
+        if presentationSuppressed {
+            for button in primary + auxiliary + [menuButton] { button.isEnabled = false }
+            angle.isEnabled = false
+        }
+        updateStatusButton()
     }
-    func closePopovers() { hinge.close(); input.close(); location.close() }
+    func closePopovers() {
+        activePopover = nil
+        for popover in [hinge, input, location, environmentPopover, viewPopover] + [reportPopover].compactMap({ $0 }) { popover.close() }
+    }
+    func focusTools() { menuButton.window?.makeFirstResponder(menuButton) }
+    func presentReport(_ popover: NSPopover, from anchor: NSView, first: NSView) {
+        reportPopover = popover; popover.delegate = self
+        present(popover, from: anchor, first: first, edge: .maxX)
+    }
     @objc private func accessibilityChanged() {
-        for popover in [hinge,input,location] { popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+        for popover in [hinge,input,location,environmentPopover,viewPopover] + [reportPopover].compactMap({ $0 }) { popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
     }
-    private func present(_ popover: NSPopover, from button: NSView, first: NSView, edge: NSRectEdge = .maxY) {
+    private func present(_ popover: NSPopover, from button: NSView, first: NSView, edge: NSRectEdge = .minY) {
         if popover.isShown { popover.close(); return }
         activePopover = nil; closePopovers(); onCleanup(); popoverOpeners[ObjectIdentifier(popover)] = button; activePopover = popover
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: edge)
+        guard let owner = button.window, !button.isHiddenOrHasHiddenAncestor else { return }
+        popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let visible = owner.screen?.visibleFrame ?? owner.frame
+        if let scroll = popover.contentViewController?.view as? NSScrollView, let document = scroll.documentView {
+            popover.contentSize = NSSize(width: document.frame.width, height: min(document.frame.height, max(100, visible.height - 40)))
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, document.frame.height - popover.contentSize.height)))
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
+        let anchor = owner.convertToScreen(button.convert(button.bounds, to: nil))
+        var preferred = edge
+        if edge == .minY && anchor.minY - visible.minY < popover.contentSize.height { preferred = .maxY }
+        if edge == .maxX && visible.maxX - anchor.maxX < popover.contentSize.width { preferred = .minX }
+        if edge == .minX && anchor.minX - visible.minX < popover.contentSize.width { preferred = .maxX }
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: preferred)
         button.setAccessibilityExpanded(true)
         first.window?.makeFirstResponder(first)
     }
@@ -373,10 +460,26 @@ final class SimulatorDeviceChrome: NSObject, NSPopoverDelegate, NSTextFieldDeleg
         opener.setAccessibilityExpanded(false)
         guard activePopover === popover else { return }
         activePopover = nil
-        if NSApp.isActive { opener.window?.makeKey(); opener.window?.makeFirstResponder(opener) }
+        guard NSApp.isActive, !opener.isHiddenOrHasHiddenAncestor,
+              (opener as? NSControl)?.isEnabled != false, let owner = opener.window, owner.isVisible,
+              NSApp.keyWindow == nil || NSApp.keyWindow === owner || NSApp.keyWindow === popover.contentViewController?.view.window else { return }
+        owner.makeKey(); owner.makeFirstResponder(opener)
+    }
+    private func installEscapeMonitor() {
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard event.keyCode == 53, let popover = self?.activePopover, popover.isShown,
+                  event.window === popover.contentViewController?.view.window else { return event }
+            popover.close(); return nil
+        }
     }
     private func setup(_ popover: NSPopover, root: NSView) {
-        let controller = NSViewController(); controller.view = root
+        let controller = NSViewController()
+        if popover === hinge { controller.view = root }
+        else {
+            let scroll = NSScrollView(frame: root.bounds)
+            scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
+            scroll.documentView = root; controller.view = scroll
+        }
         popover.contentViewController = controller; popover.behavior = .transient; popover.delegate = self
     }
     private func configureHinge() {
@@ -404,6 +507,92 @@ final class SimulatorDeviceChrome: NSObject, NSPopoverDelegate, NSTextFieldDeleg
         }
         setup(hinge, root: root)
     }
+    private func configureEnvironment() {
+        let root = NSView(frame: CGRect(x: 0, y: 0, width: 320, height: 400))
+        appearance.frame = CGRect(x: 12, y: 354, width: 296, height: 28)
+        appearance.target = self; appearance.action = #selector(changeAppearance)
+        appearance.setAccessibilityLabel("기기 외관"); root.addSubview(appearance)
+        contrast.frame = CGRect(x: 12, y: 279, width: 296, height: 28)
+        contrast.allowsMixedState = true; contrast.target = self; contrast.action = #selector(changeContrast); root.addSubview(contrast)
+        let title = NSTextField(labelWithString: "글자 크기"); title.frame = CGRect(x: 12, y: 210, width: 296, height: 22); root.addSubview(title)
+        for (index, title) in ["작게", "기본", "크게", "접근성 크게"].enumerated() {
+            let button = NSButton(radioButtonWithTitle: title, target: self, action: #selector(changeSize(_:)))
+            button.tag = index; button.frame = CGRect(x: 12, y: 182 - CGFloat(index) * 26, width: 296, height: 26)
+            root.addSubview(button); sizeChoices.append(button)
+        }
+        for (option, y) in [("appearance", 313.0), ("increase_contrast", 237.0), ("content_size", 56.0)] {
+            let label = NSTextField(wrappingLabelWithString: "확인 전")
+            label.frame = CGRect(x: 12, y: y, width: 296, height: 40); label.font = .systemFont(ofSize: 11)
+            root.addSubview(label); environmentLabels[option] = label
+        }
+        environmentRetry = NSButton(title: "다시 확인", target: self, action: #selector(retryEnvironment))
+        environmentRetry.frame = CGRect(x: 12, y: 12, width: 296, height: 30); root.addSubview(environmentRetry)
+        setup(environmentPopover, root: root)
+        updateEnvironmentControls()
+    }
+    func receiveSetting(_ option: String, update: SimulatorSettingUpdate) {
+        if option.hasPrefix("location") {
+            switch update {
+            case .reading: break
+            case .applying: locationStatus.stringValue = "위치 명령 전송 중…"
+            case .finished(_, let error): locationStatus.stringValue = error.map { "! " + $0 + " · 같은 버튼으로 재시도" } ?? "✓ 명령 전달됨 · 기기의 위치 반영은 미확인"
+            }
+            NSAccessibility.post(element: locationStatus, notification: .valueChanged)
+            return
+        }
+        environmentStates[option, default: SimulatorSettingState()].receive(update)
+        updateEnvironmentControls()
+        if let label = environmentLabels[option] { NSAccessibility.post(element: label, notification: .valueChanged) }
+    }
+    private func settingTitle(_ value: String) -> String {
+        ["light":"라이트", "dark":"다크", "enabled":"켬", "disabled":"끔", "small":"작게", "large":"기본", "extra-large":"크게", "accessibility-large":"접근성 크게"][value] ?? value
+    }
+    private func updateEnvironmentControls() {
+        for (option, label) in environmentLabels {
+            let state = environmentStates[option] ?? SimulatorSettingState()
+            let actual = state.confirmed.map(settingTitle) ?? "미확인"
+            let prefix = state.error != nil || state.pending ? "마지막 확인값 " : "확인값 "
+            label.stringValue = prefix + actual + (state.pending ? " · " + (state.requested.map { settingTitle($0) + " 적용 중…" } ?? "읽는 중…") : state.error.map { "\n! " + $0 + (state.requested.map { " · 요청 " + settingTitle($0) } ?? "") } ?? "")
+            label.toolTip = label.stringValue
+        }
+        appearance.selectedSegment = ["light", "dark"].firstIndex(of: environmentStates["appearance"]?.confirmed ?? "") ?? -1
+        contrast.state = environmentStates["increase_contrast"]?.confirmed.map { $0 == "enabled" ? NSControl.StateValue.on : .off } ?? .mixed
+        for (i, button) in sizeChoices.enumerated() { button.state = environmentStates["content_size"]?.confirmed == sizeValues[i] ? .on : .off; button.isEnabled = !unavailable }
+        appearance.isEnabled = !unavailable; contrast.isEnabled = !unavailable
+        environmentRetry?.isEnabled = !unavailable
+        environmentRetry?.title = environmentStates.values.contains { $0.error != nil && $0.requested != nil } ? "실패한 설정 재시도" : "다시 확인"
+    }
+    @objc private func changeAppearance() { guard !unavailable, appearance.selectedSegment >= 0 else { return }; onHost("appearance", ["light", "dark"][appearance.selectedSegment]); updateEnvironmentControls() }
+    @objc private func changeContrast() { guard !unavailable else { return }; onHost("increase_contrast", environmentStates["increase_contrast"]?.confirmed == "enabled" ? "disabled" : "enabled"); updateEnvironmentControls() }
+    @objc private func changeSize(_ sender: NSButton) { guard !unavailable else { return }; onHost("content_size", sizeValues[sender.tag]); updateEnvironmentControls() }
+    @objc private func retryEnvironment() {
+        guard !unavailable else { return }
+        if let entry = environmentStates.sorted(by: { $0.key < $1.key }).first(where: { $0.value.error != nil && $0.value.requested != nil }), let requested = entry.value.requested { onHost(entry.key, requested) }
+        else { onReadEnvironment() }
+    }
+    private func configureView() {
+        let root = NSView(frame: CGRect(x: 0, y: 0, width: 300, height: 252))
+        for (index, title) in ["집중 모드", "검사 도구", "Mac 키보드를 기기로 전달", "터치 표시"].enumerated() {
+            let check = NSButton(checkboxWithTitle: title, target: self, action: #selector(changeView(_:)))
+            check.tag = index; check.frame = CGRect(x: 12, y: 212 - CGFloat(index) * 32, width: 276, height: 30)
+            root.addSubview(check); viewChecks.append(check)
+        }
+        scaleLabel.frame = CGRect(x: 12, y: 84, width: 276, height: 22); scaleLabel.font = .systemFont(ofSize: 11); root.addSubview(scaleLabel)
+        let sizes = NSSegmentedControl(labels: ["50%", "75%", "100%"], trackingMode: .momentary, target: self, action: #selector(changeScale(_:)))
+        sizes.frame = CGRect(x: 12, y: 50, width: 276, height: 28); sizes.setAccessibilityLabel("LCD 크기 변경"); root.addSubview(sizes)
+        let center = NSButton(title: "화면 중앙으로 이동", target: self, action: #selector(centerDevice))
+        center.frame = CGRect(x: 12, y: 10, width: 276, height: 30); root.addSubview(center)
+        setup(viewPopover, root: root)
+    }
+    @objc private func changeView(_ sender: NSButton) { onViewAction(["focus", "tools", "keyboard", "touches"][sender.tag], 0); updateControls() }
+    @objc private func changeScale(_ sender: NSSegmentedControl) { guard sender.selectedSegment >= 0 else { return }; closePopovers(); onViewAction("size", [50,75,100][sender.selectedSegment]) }
+    @objc private func centerDevice() { closePopovers(); onViewAction("size", 0) }
+    func inputStarted(_ title: String) { inputStatus.stringValue = title + " 전송 중…" }
+    func inputFinished(_ message: String, failed: Bool) {
+        inputStatus.stringValue = (failed ? "! " : "✓ ") + message + (failed ? " · 초안 유지, 다시 전송 가능" : "")
+        inputStatus.toolTip = inputStatus.stringValue
+        NSAccessibility.post(element: inputStatus, notification: .valueChanged)
+    }
     private func formField(_ field: NSTextField, label: String, y: CGFloat, in root: NSView) {
         let title = NSTextField(labelWithString: label); title.frame = CGRect(x: 12,y: y+30,width: root.bounds.width-24,height: 20)
         field.delegate = self
@@ -413,25 +602,31 @@ final class SimulatorDeviceChrome: NSObject, NSPopoverDelegate, NSTextFieldDeleg
     private func formButton(_ title: String, selector: Selector, y: CGFloat, in root: NSView) {
         let button = NSButton(title: title, target: self, action: selector)
         button.frame = CGRect(x: 12,y: y,width: root.bounds.width-24,height: 30); root.addSubview(button)
+        formActions.append(button)
     }
     private func configureInput() {
-        let root = NSView(frame: CGRect(x: 0,y: 0,width: 300,height: 288))
-        formButton("Mac 키보드 전달 켜기/끄기", selector: #selector(keyboard), y: 246, in: root)
-        formField(textDraft,label: "기기로 보낼 글자",y: 188,in: root)
+        let root = NSView(frame: CGRect(x: 0,y: 0,width: 300,height: 348))
+        keyboardCheck.target = self; keyboardCheck.action = #selector(keyboard)
+        keyboardCheck.frame = CGRect(x: 12, y: 306, width: 276, height: 30); root.addSubview(keyboardCheck)
+        formField(textDraft,label: "기기로 보낼 글자",y: 248,in: root)
         textDraft.target = self; textDraft.action = #selector(sendText)
-        formButton("텍스트 전송",selector: #selector(sendText),y: 152,in: root)
-        formButton("Mac 클립보드 붙여넣기…",selector: #selector(paste),y: 116,in: root)
-        formField(keyDraft,label: "키 조합 · Return, cmd+a",y: 52,in: root)
+        formButton("텍스트 전송",selector: #selector(sendText),y: 212,in: root)
+        formButton("Mac 클립보드 붙여넣기…",selector: #selector(paste),y: 176,in: root)
+        formField(keyDraft,label: "키 조합 · Return, cmd+a",y: 112,in: root)
         keyDraft.target = self; keyDraft.action = #selector(sendKey)
-        formButton("키 전송",selector: #selector(sendKey),y: 12,in: root)
+        formButton("키 전송",selector: #selector(sendKey),y: 72,in: root)
+        inputStatus.frame = CGRect(x: 12, y: 8, width: 276, height: 58); inputStatus.font = .systemFont(ofSize: 11)
+        root.addSubview(inputStatus)
         setup(input,root: root)
     }
     private func configureLocation() {
-        let root = NSView(frame: CGRect(x: 0,y: 0,width: 300,height: 208))
-        formField(latitude,label: "위도 (−90…90)",y: 140,in: root)
-        formField(longitude,label: "경도 (−180…180)",y: 80,in: root)
-        formButton("좌표 적용",selector: #selector(applyLocation),y: 42,in: root)
-        formButton("위치 시뮬레이션 중지",selector: #selector(clearLocation),y: 8,in: root)
+        let root = NSView(frame: CGRect(x: 0,y: 0,width: 300,height: 268))
+        formField(latitude,label: "위도 (−90…90)",y: 200,in: root)
+        formField(longitude,label: "경도 (−180…180)",y: 140,in: root)
+        formButton("좌표 적용",selector: #selector(applyLocation),y: 102,in: root)
+        formButton("위치 시뮬레이션 중지",selector: #selector(clearLocation),y: 68,in: root)
+        locationStatus.frame = CGRect(x: 12, y: 8, width: 276, height: 52); locationStatus.font = .systemFont(ofSize: 11)
+        root.addSubview(locationStatus)
         setup(location,root: root)
     }
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
@@ -451,19 +646,30 @@ final class SimulatorDeviceChrome: NSObject, NSPopoverDelegate, NSTextFieldDeleg
         menu.autoenablesItems = false; closePopovers(); onCleanup()
         menu.popUp(positioning: nil, at: CGPoint(x: 0,y: button.bounds.maxY), in: button)
     }
-    @objc private func openMenu() { pop(onMenu(), from: menuButton) }
+    @objc private func openMenu() {
+        let menu = onMenu()
+        if !feedback.stringValue.isEmpty {
+            let status = NSMenuItem(title: feedback.stringValue, action: nil, keyEquivalent: "")
+            status.isEnabled = false; menu.insertItem(status, at: 0)
+            let response = NSMenuItem(title: "최근 응답…", action: #selector(responseFromDeviceMenu), keyEquivalent: "")
+            response.target = self; menu.insertItem(response, at: 1)
+            menu.insertItem(.separator(), at: 2)
+        }
+        pop(menu, from: menuButton)
+    }
+    @objc private func responseFromDeviceMenu() { closePopovers(); onCleanup(); onResponse(menuButton) }
     @objc private func home() { run(["action":"button","button":"home"]) }
     @objc private func lock() { run(["action":"button","button":"lock"]) }
     @objc private func capture() { run(["action":"screenshot"]) }
     @objc private func record() { closePopovers(); onCleanup(); onRecord() }
     @objc private func keyboard() { onKeyboard() }
     @objc private func touches() { onTouches() }
-    @objc private func response() { closePopovers(); onCleanup(); onResponse(responseButton) }
+    @objc private func response() { closePopovers(); onCleanup(); onResponse(primary[6]) }
     @objc private func showHinge() { if foldable && !unavailable { present(hinge, from: fold, first: angle, edge: .minX) } }
     @objc private func showInput() { if !unavailable { present(input,from: auxiliary[0],first: textDraft) } }
     @objc private func showLocation() { if !unavailable { present(location,from: auxiliary[3],first: latitude) } }
-    @objc private func sendText() { if !textDraft.stringValue.isEmpty { run(["action":"type","text":textDraft.stringValue]) } }
-    @objc private func sendKey() { if !keyDraft.stringValue.isEmpty { run(["action":"key","key":keyDraft.stringValue]) } }
+    @objc private func sendText() { if !textDraft.stringValue.isEmpty { run(["action":"type","text":textDraft.stringValue]) } else { inputFinished("보낼 글자를 입력하세요", failed: true) } }
+    @objc private func sendKey() { if !keyDraft.stringValue.isEmpty { run(["action":"key","key":keyDraft.stringValue]) } else { inputFinished("보낼 키 조합을 입력하세요", failed: true) } }
     @objc private func paste() {
         guard !unavailable else { return }
         let alert = NSAlert(); alert.messageText = name + "에 붙여넣을까요?"
@@ -473,7 +679,10 @@ final class SimulatorDeviceChrome: NSObject, NSPopoverDelegate, NSTextFieldDeleg
     }
     @objc private func applyLocation() {
         guard !unavailable, let lat = Double(latitude.stringValue), let lon = Double(longitude.stringValue), lat.isFinite,lon.isFinite,(-90...90).contains(lat),(-180...180).contains(lon) else {
-            showFeedback("위도와 경도를 범위 안의 숫자로 입력하세요",failed: true); return
+            guard !unavailable else { return }
+            locationStatus.stringValue = "! 위도 −90…90, 경도 −180…180 범위의 숫자를 입력하세요"
+            locationStatus.window?.makeFirstResponder(Double(latitude.stringValue).map { $0.isFinite && (-90...90).contains($0) } == true ? longitude : latitude)
+            showFeedback(locationStatus.stringValue,failed: true); return
         }
         onHost("location", "\(lat),\(lon)")
     }
@@ -506,34 +715,33 @@ final class SimulatorDeviceChrome: NSObject, NSPopoverDelegate, NSTextFieldDeleg
         }
     }
     @objc private func environment() {
-        let menu = NSMenu(title: "환경")
-        for (title,value) in [("라이트로 변경","light"),("다크로 변경","dark")] { item(menu,title,enabled: !unavailable) { [weak self] in self?.onHost("appearance",value) } }
-        for (title,value) in [("대비 높이기 켜기","enabled"),("대비 높이기 끄기","disabled")] { item(menu,title,enabled: !unavailable) { [weak self] in self?.onHost("increase_contrast",value) } }
-        let sizes = NSMenu(title: "글자 크기")
-        for (title,value) in [("작게","small"),("기본","large"),("크게","extra-large"),("접근성 크게","accessibility-large")] { item(sizes,title,enabled: !unavailable) { [weak self] in self?.onHost("content_size",value) } }
-        let size = NSMenuItem(title: "글자 크기",action: nil,keyEquivalent: ""); size.submenu = sizes; menu.addItem(size)
-        pop(menu,from: auxiliary[2])
+        guard !unavailable else { return }
+        let opening = !environmentPopover.isShown
+        present(environmentPopover, from: auxiliary[2], first: appearance)
+        if opening { onReadEnvironment() }
     }
-    @objc private func inspection() {
-        let menu = NSMenu(title: "검사")
-        item(menu,"화면 요소 · UIView · 다중 터치…") { [weak self] in self?.onTools() }
-        item(menu,"가이드 캡처",enabled: !unavailable) { [weak self] in self?.run(["action":"screenshot","guides":true]) }
-        item(menu,"활동과 결과") { [weak self] in guard let self else { return }; self.onResponse(self.auxiliary[4]) }
-        pop(menu,from: auxiliary[4])
-    }
-    @objc private func viewMenu() { pop(onMenu(),from: auxiliary[5]) }
-    @objc private func more() {
+    @objc private func inspection() { closePopovers(); onCleanup(); onTools() }
+    @objc private func viewMenu() { displayScale = currentDisplayScale(); updateControls(); present(viewPopover, from: auxiliary[5], first: viewChecks[0]) }
+    func moreMenu() -> NSMenu {
         let menu = NSMenu(title: "기기 더보기")
+        if !feedback.stringValue.isEmpty {
+            let status = NSMenuItem(title: feedback.stringValue, action: nil, keyEquivalent: "")
+            status.isEnabled = false; menu.addItem(status)
+        }
+        item(menu,"최근 응답…") { [weak self] in self?.response() }
+        menu.addItem(.separator())
         for (title,button) in [("Siri","siri"),("측면 버튼","side")] { item(menu,title,enabled: !unavailable) { [weak self] in self?.run(["action":"button","button":button]) } }
         if watch {
             for (title,value) in [("Crown 위로",-60.0),("Crown 아래로",60.0)] { item(menu,title,enabled: !unavailable) { [weak self] in self?.run(["action":"crown","amount":value]) } }
         } else {
-            for (title,value) in [("세로","portrait"),("가로 오른쪽","landscape-right"),("거꾸로","upside-down"),("가로 왼쪽","landscape-left")] { item(menu,title,enabled: !unavailable) { [weak self] in self?.run(["action":"rotate","orientation":value]) } }
+            for (title,value) in [("세로","portrait"),("가로 오른쪽","landscape-right"),("거꾸로","upside-down"),("가로 왼쪽","landscape-left")] { item(menu,title,enabled: !unavailable && !rotationCommandActive) { [weak self] in self?.run(["action":"rotate","orientation":value]) }
+                menu.items.last?.state = confirmedOrientation == value ? .on : .off }
         }
         menu.addItem(.separator())
         item(menu,"시뮬레이터 관리…") { [weak self] in self?.onManage() }
-        pop(menu,from: primary[6])
+        return menu
     }
+    @objc private func more() { pop(moreMenu(),from: primary[6]) }
     /// Legacy layouts remain readable for saved detached panels; production uses embedded bars.
     func enableFloatingModules() { usesFloatingModules = true; fold.isHidden = true }
 }

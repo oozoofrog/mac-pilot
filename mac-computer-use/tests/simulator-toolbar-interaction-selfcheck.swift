@@ -36,7 +36,8 @@ private final class ToolbarFixtureLCD: NSView {
         chrome.updateAngle(90)
         content.needsLayout = true; content.layoutSubtreeIfNeeded()
         let rowScroll = descendants(chrome.rail).compactMap { $0 as? NSScrollView }.first!
-        precondition(rowScroll.contentView.bounds.origin.y == 0,"Horizontal task row must not retain a vertical clipping offset")
+        precondition(abs(rowScroll.contentView.bounds.origin.y) <= 0.5 / window.backingScaleFactor + 0.001,
+                     "Horizontal task row must not scroll vertically beyond backing-pixel rounding")
         let buttons = descendants(chrome.controls).compactMap { $0 as? NSButton }
         let fold = buttons.first { $0.title == "접기" }!
         var commands: [[String:Any]] = []

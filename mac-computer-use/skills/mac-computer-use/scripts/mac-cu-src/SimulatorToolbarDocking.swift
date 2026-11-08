@@ -208,7 +208,7 @@ final class SimulatorToolbarDocking: NSObject, NSWindowDelegate {
         self.compactControls = compactControls
         self.ownerID = ownerID; deviceName = name
         self.device = device; self.tools = tools; self.defaults = defaults
-        toolbarGrip = SimulatorToolbarGrip(title: name + " · 메인 도구")
+        toolbarGrip = SimulatorToolbarGrip(title: name + (compactControls ? " · 검사 도구" : " · 메인 도구"))
         backdrop = SimulatorGlassView(content: root)
         super.init()
         if !compactControls { chrome.enableFloatingModules() }

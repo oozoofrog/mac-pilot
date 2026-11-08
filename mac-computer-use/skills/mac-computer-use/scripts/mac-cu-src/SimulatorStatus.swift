@@ -93,6 +93,7 @@ final class SimulatorStatusWindow: NSObject {
             let scroll = NSTextView.scrollableTextView()  // wraps to the width and scrolls from the top
             let textView = scroll.documentView as! NSTextView
             textView.isEditable = false
+            textView.setAccessibilityLabel("시뮬레이터 상태와 마지막 확인 시각")
             textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
             textView.textContainerInset = NSSize(width: 8, height: 8)
             panel.contentView = scroll
@@ -107,6 +108,7 @@ final class SimulatorStatusWindow: NSObject {
     func redraw() {
         guard let panel, panel.isVisible, let textView else { return }  // A hidden window is drawn when it is shown.
         let board = SimulatorStatusBoard.shared
+        guard board.updatedAt != .distantPast else { textView.string = "시뮬레이터 상태를 읽는 중…"; return }
         let time = DateFormatter.localizedString(from: board.updatedAt, dateStyle: .none, timeStyle: .medium)
         let rows = board.statuses.map { status in
             "\(status.name)  \(status.runtime)\n  \(status.screen.isEmpty ? "화면 정보 없음" : "켜진 화면: \(status.screen)")\n  " +

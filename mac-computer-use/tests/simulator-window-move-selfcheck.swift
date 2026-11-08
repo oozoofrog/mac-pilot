@@ -21,7 +21,7 @@ private final class MovementLCD: NSView {
         let lcd = MovementLCD(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
         let tools = SimulatorToolboxView(deviceName: "Move fixture", isWatch: false)
         let content = SimulatorLCDContentView(lcd: lcd, tools: tools, appearance: SimulatorDeviceAppearance(typeName: "iPhone"))
-        content.screen = CGSize(width: 320, height: 480); content.externalToolbar = true
+        content.screen = CGSize(width: 320, height: 480); content.externalToolbar = false
         let window = SimulatorDeviceWindow(contentRect: CGRect(x: 0, y: 0, width: 600, height: 600),
             styleMask: [.borderless, .closable, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = content
@@ -86,6 +86,9 @@ private final class MovementLCD: NSView {
         content.focused = true; content.needsLayout = true; content.layoutSubtreeIfNeeded()
         drag(24)
         assert(starts == 5 && ends == 5 && lcd.inputEvents == 3, "Movement remains available in focus mode without LCD input")
+        content.focused = false; content.externalToolbar = true; content.needsLayout = true; content.layoutSubtreeIfNeeded()
+        drag(24)
+        assert(starts == 6 && ends == 6 && lcd.inputEvents == 3, "External toolbar path retains window movement")
         window.setFrame(initial, display: true)
         print("PASS actual borderless window movement: caption/name hit delivery, repeated screen-coordinate drag/readback, mouse-up, cancellation/late events, detachment, focus mode and independent LCD input. AppKit events were local; no global pointer or simulator HID was sent.")
     }

@@ -1,11 +1,16 @@
-# Simulator preparation verification
+# Simulator preparation validation
 
-Run `python3 scripts/validate_distribution.py` and `bash scripts/check.sh` from the repository root. Follow [native check safety](native-check-safety.md) before launching a native harness.
+The native preparation manager uses the existing production backend and LCD route. Task tabs separate inventory, device creation and runtime preparation. Selection details distinguish actual state, last-known inventory, runtime and usage; filtering clears a hidden selection. Drafts survive refresh and recoverable failures. Runtime installation retains explicit consequence and cancellation controls.
 
-The completed manager passed backend/subprocess fixtures, production typechecking, guarded manager UI checks and the full repository suite. Coverage includes compatible runtime/model selection, name admission, claim blocking, cancellation/timeouts, bounded output, creation draft recovery, inventory readback, tab/search/selection behavior, keyboard field routes and confirmation Return cancellation with focus restoration. Guarded inventory-only checks exercised the actual device/runtime lists without creating devices or installing runtimes.
+## Checks performed
 
-A prior harness removed production helper dispatch and recursively entered the GUI. The fixed runners preserve helper dispatch, reject inherited root entry, prove non-GUI routes first and enforce parent deadlines, exact executable budgets and owned-process cleanup. Six dedicated safety regressions passed.
+- The full repository check passed during implementation, including distribution/safety tests, production Swift typechecks, preparation backend/UI and Decisions checks, and existing gesture/docking suites.
+- Guarded native checks exercised empty/no-match states, retained drafts, compact scrolling, tab focus and wrapping, consent cancellation with no installer command, and focus return.
+- Earlier live checks covered device creation, cold boot, LCD framebuffer/capture, registry cleanup and claim blocking/release. These lifecycle checks preceded the tab redesign; the redesigned create/start routes used injected backends.
+- The final isolated preparation window check passed serially under its watchdog as part of the 1.30.0 verification. Owned test processes and temporary claims were cleaned up.
 
-## Limits
+## Remaining limits
 
-Actual runtime download/import, new-device creation, cold boot and manager-driven LCD opening were not exercised as part of inventory-only acceptance. Mock tests do not establish those live operations. Physical popup-menu operation, file picking, VoiceOver and touch remain separate checks. Local inventories, identifiers, screenshots, logs and installation receipts are excluded from Git and release archives.
+Physical keyboard/touch, VoiceOver, multiple displays, actual runtime download/import, installer cancellation, Apple login/licensing, disk-space failures and native file picking remain unverified. An earlier live reopen stopped at its foreground guard before the action was sent. The guard was retained.
+
+Generated apps, captures, logs, device identifiers and installation receipts remain local and are excluded from Git and release archives. Source checks, global app installation and marketplace publication are separate operations.

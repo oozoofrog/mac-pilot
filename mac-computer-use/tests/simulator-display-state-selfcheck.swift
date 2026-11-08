@@ -29,6 +29,10 @@ struct SimulatorDisplayStateSelfcheck {
         }
         assert(Set(requestPaths).count == 16)
         assert(requestPaths.allSatisfy { !FileManager.default.fileExists(atPath: $0) })
+        assert(normalizeSimulatorDisplay(["backlightState": "activeOn"])["active"] as? Bool == true)
+        assert(normalizeSimulatorDisplay(["backlightState": "off"])["active"] as? Bool == false)
+        assert(normalizeSimulatorDisplay(["active": false, "backlightState": "activeOn"])["active"] as? Bool == false)
+        assert(normalizeSimulatorDisplay([:])["active"] == nil)
         #if !DISPLAY_RACE_ONLY
         assert(!simulatorCommandNeedsActiveScreen("button"))
         assert(!simulatorCommandNeedsActiveScreen("crown"))

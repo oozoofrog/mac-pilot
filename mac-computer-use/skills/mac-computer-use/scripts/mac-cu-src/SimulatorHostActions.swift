@@ -2,11 +2,36 @@ import AppKit
 import Foundation
 import Darwin
 
+enum SimulatorSettingUpdate {
+    case reading, applying(String), finished(actual: String?, error: String?)
+}
+
+struct SimulatorSettingState {
+    var confirmed: String?
+    var requested: String?
+    var pending = false
+    var error: String?
+    mutating func receive(_ update: SimulatorSettingUpdate) {
+        switch update {
+        case .reading: pending = true; requested = nil; error = nil
+        case .applying(let value): pending = true; requested = value; error = nil
+        case .finished(let actual, let failure):
+            pending = false; error = failure
+            if let actual { confirmed = actual }
+            if failure == nil { requested = nil }
+        }
+    }
+}
+
 /// One instance owns only commands it starts for one exact simulator UDID.
 /// Call the public methods on the main thread; callbacks are delivered there.
 final class SimulatorHostActions: NSObject {
     var onState: (String, Bool) -> Void = { _, _ in }
     var onRecording: (Bool, String) -> Void = { _, _ in }
+    var onSetting: (String, SimulatorSettingUpdate) -> Void = { _, _ in }
+    var onBusy: (Bool) -> Void = { _ in }
+    private var settingsActive = false
+    private var acceptingUI = true
 
     private let deviceID: String
     private let executable: URL
@@ -40,7 +65,7 @@ final class SimulatorHostActions: NSObject {
     }
 
     private func state(_ message: String, _ error: Bool = false) {
-        DispatchQueue.main.async { [weak self] in self?.onState(message, error) }
+        DispatchQueue.main.async { [weak self] in guard let self, self.acceptingUI else { return }; self.onState(message, error) }
     }
     private func recordState(_ active: Bool, _ message: String) {
         DispatchQueue.main.async { [weak self] in
@@ -50,8 +75,43 @@ final class SimulatorHostActions: NSObject {
 
     private static let sizes: Set<String> = ["extra-small", "small", "medium", "large", "extra-large", "extra-extra-large", "extra-extra-extra-large", "accessibility-medium", "accessibility-large", "accessibility-extra-large", "accessibility-extra-extra-large", "accessibility-extra-extra-extra-large", "increment", "decrement"]
 
+    static func confirmedValue(_ text: String, option: String) -> String? {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let choices = option == "appearance" ? Set(["light", "dark"]) : option == "increase_contrast" ? Set(["enabled", "disabled"]) : sizes.subtracting(["increment", "decrement"])
+        return choices.contains(value) ? value : nil
+    }
+    private func setting(_ option: String, _ update: SimulatorSettingUpdate, done: Bool = false) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.acceptingUI else { return }
+            self.onSetting(option, update)
+            if done { self.settingsActive = false; self.onBusy(false) }
+        }
+    }
+    func readEnvironment() {
+        guard acceptingUI, !settingsActive, UUID(uuidString: deviceID) != nil else { return }
+        settingsActive = true; onBusy(true)
+        let options = ["appearance", "increase_contrast", "content_size"]
+        for option in options { onSetting(option, .reading) }
+        queue.async { [self] in readEnvironment(options, index: 0) }
+    }
+    private func readEnvironment(_ options: [String], index: Int) {
+        guard !closed else { return }
+        let option = options[index]
+        finiteCommand(["ui", deviceID, option]) { result in
+            let actual = (try? result.get()).flatMap { Self.confirmedValue($0, option: option) }
+            let error: String?
+            switch result {
+            case .failure(let failure): error = failure.localizedDescription
+            case .success: error = actual == nil ? "이 설정을 확인할 수 없습니다" : nil
+            }
+            self.setting(option, .finished(actual: actual, error: error), done: index == options.count - 1)
+            if index + 1 < options.count { self.readEnvironment(options, index: index + 1) }
+        }
+    }
+
     /// The Boolean callback indicates an error, not a pending or confirmed value.
     func run(option: String, value: String) {
+        guard acceptingUI, !settingsActive else { return }
         guard UUID(uuidString: deviceID) != nil else { state("정확한 기기 UDID가 필요합니다.", true); return }
         let args: [String]
         let ui: Bool
@@ -69,26 +129,34 @@ final class SimulatorHostActions: NSObject {
         case "location-clear": args = ["location", deviceID, "clear"]; ui = false
         default: state("지원하지 않는 설정 또는 값입니다.", true); return
         }
+        settingsActive = true; onBusy(true); onSetting(option, .applying(value))
         queue.async { [self] in
             guard !closed else { return }
             guard finite == nil else { state("다른 설정을 적용하고 있습니다.", true); return }
             state("설정을 적용하는 중…")
             finiteCommand(args) { result in
                 switch result {
-                case .failure(let error): self.state(error.localizedDescription, true)
+                case .failure(let error):
+                    self.setting(option, .finished(actual: nil, error: error.localizedDescription), done: true)
+                    self.state(error.localizedDescription, true)
                 case .success:
                     if ui {
                         self.finiteCommand(["ui", self.deviceID, option]) { readback in
                             switch readback {
-                            case .failure(let error): self.state("설정을 보냈지만 확인하지 못했습니다: \(error.localizedDescription)", true)
+                            case .failure(let error):
+                                self.setting(option, .finished(actual: nil, error: "적용 후 확인 실패: \(error.localizedDescription)"), done: true)
+                                self.state("설정을 보냈지만 확인하지 못했습니다: \(error.localizedDescription)", true)
                             case .success(let text):
-                                let actual = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                                guard !actual.isEmpty, actual != "unsupported", actual != "unknown" else { self.state("설정을 확인할 수 없습니다: \(actual)", true); return }
-                                if value != "increment" && value != "decrement" && actual != value { self.state("요청한 값 \(value), 현재 값 \(actual)", true) }
-                                else { self.state("\(option): \(actual)") }
+                                let actual = Self.confirmedValue(text, option: option)
+                                let failure = actual == nil ? "설정값을 확인할 수 없습니다" : value != "increment" && value != "decrement" && actual != value ? "요청값과 확인값이 다릅니다" : nil
+                                self.setting(option, .finished(actual: actual, error: failure), done: true)
+                                self.state(failure ?? "\(option): \(actual ?? "미확인")", failure != nil)
                             }
                         }
-                    } else { self.state("위치 명령을 보냈습니다. 기기의 위치 반영 여부는 확인되지 않았습니다.") }
+                    } else {
+                        self.setting(option, .finished(actual: nil, error: nil), done: true)
+                        self.state("위치 명령을 보냈습니다. 기기의 위치 반영 여부는 확인되지 않았습니다.")
+                    }
                 }
             }
         }
@@ -235,6 +303,7 @@ final class SimulatorHostActions: NSObject {
         }
     }
     func close() {
+        acceptingUI = false
         savePanel?.cancel(nil); savePanel = nil
         queue.async { [self] in
             guard !closed else { return }; closed = true
