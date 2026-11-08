@@ -3,6 +3,7 @@ import AppKit
 @main
 struct SimulatorWindowPresentationSelfcheck {
     static func main() {
+        admitNativeSelfcheck()
         typealias State = SimulatorWindowVisibility
         assert(State.resolve(isMiniaturized: true, isHidden: true, isOnActiveSpace: false, isForeground: true) == .minimized)
         assert(State.resolve(isMiniaturized: false, isHidden: true, isOnActiveSpace: false, isForeground: true) == .hidden)
@@ -72,6 +73,32 @@ struct SimulatorWindowPresentationSelfcheck {
         assert(hidden.title == "프리뷰 숨김")
         assert(hidden.state == (SimulatorPreviewWindow.isHiddenByUser ? .on : .off))
         let hit = preview.panel.contentView!.subviews.compactMap { $0 as? SimulatorPreviewClickView }.first!
+        // Exercise the floating preview's own hit dispatch, not the LCD window's grip.
+        preview.applyLayout(CGRect(x: 100, y: 100, width: 137.5, height: 222))
+        let session = CGSessionCopyCurrentDictionary() as? [String:Any] ?? [:]
+        guard session["CGSSessionScreenIsLocked"] as? Bool != true, CGDisplayIsAsleep(CGMainDisplayID()) == 0 else { exit(2) }
+        preview.panel.orderFrontRegardless()
+        let anchor = preview.panel.convertPoint(toScreen: NSPoint(x: 20, y: 30))
+        func previewEvent(_ type: NSEvent.EventType, _ screenPoint: NSPoint, count: Int = 1) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: preview.panel.convertPoint(fromScreen: screenPoint), modifierFlags: [],
+                               timestamp: 0, windowNumber: preview.panel.windowNumber, context: nil,
+                               eventNumber: 1, clickCount: count, pressure: type == .leftMouseUp ? 0 : 1)!
+        }
+        assert(preview.panel.contentView!.hitTest(NSPoint(x: 20, y: 30)) === hit)
+        preview.panel.sendEvent(previewEvent(.leftMouseDown, anchor))
+        preview.panel.sendEvent(previewEvent(.leftMouseDragged, NSPoint(x: anchor.x + 40, y: anchor.y + 25)))
+        print("PREVIEW_FRAME after first drag: \(preview.panel.frame)"); fflush(stdout)
+        assert(preview.panel.frame.origin == NSPoint(x: 140, y: 125))
+        preview.panel.sendEvent(previewEvent(.leftMouseDragged, NSPoint(x: anchor.x + 15, y: anchor.y - 10)))
+        assert(preview.panel.frame.origin == NSPoint(x: 115, y: 90), "Repeated drag must use the original screen anchor")
+        preview.panel.sendEvent(previewEvent(.leftMouseUp, NSPoint(x: anchor.x + 15, y: anchor.y - 10)))
+        assert(preview.manualFrame == preview.panel.frame, "Stack refresh must retain the dragged placement")
+        let dragged = preview.panel.frame
+        hit.mouseDragged(with: previewEvent(.leftMouseDragged, NSPoint(x: anchor.x + 80, y: anchor.y)))
+        assert(preview.panel.frame == dragged, "Late drag after mouse-up must be inert")
+        preview.applyLayout(dragged)
+        assert(preview.manualFrame == dragged)
+        preview.hide()
         let context = hit.menu(for: event(1))!
         assert(context.items.filter { !$0.isSeparatorItem }.map(\.title) == ["LCD 창 보기", "불투명도", "프리뷰 숨김", "이 프리뷰 숨김"])
         assert(context.items[1].submenu!.items.map(\.title) == opacity.items.map(\.title))

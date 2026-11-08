@@ -33,7 +33,10 @@ func simulatorWindowVisibility(_ window: NSWindow) -> SimulatorWindowVisibility 
 final class SimulatorPreviewClickView: NSView {
     var onOpen: () -> Void = {}
     var contextMenu: (() -> NSMenu)?
-    private var dragEvent: NSEvent?
+    var onMove: () -> Void = {}
+    private var dragStart: (point: NSPoint, origin: NSPoint)?
+    private weak var dragWindow: NSWindow?
+    private var dragging = false
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
@@ -41,19 +44,31 @@ final class SimulatorPreviewClickView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         window?.orderFrontRegardless()
-        dragEvent = event
-        if event.clickCount == 2 { dragEvent = nil; onOpen() }
+        cancelDrag()
+        if event.clickCount == 2 { onOpen(); return }
+        guard let window else { return }
+        dragWindow = window
+        dragStart = (window.convertPoint(toScreen: event.locationInWindow), window.frame.origin)
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard let start = dragEvent,
-              hypot(event.locationInWindow.x - start.locationInWindow.x, event.locationInWindow.y - start.locationInWindow.y) > 3
-        else { return }
-        dragEvent = nil
-        window?.performDrag(with: start)
+        guard let window = dragWindow, window === self.window, let start = dragStart else { return }
+        let point = window.convertPoint(toScreen: event.locationInWindow)
+        if !dragging {
+            guard hypot(point.x - start.point.x, point.y - start.point.y) > 3 else { return }
+            dragging = true
+        }
+        window.setFrameOrigin(NSPoint(x: start.origin.x + point.x - start.point.x,
+                                      y: start.origin.y + point.y - start.point.y))
+        onMove()
     }
 
-    override func mouseUp(with event: NSEvent) { dragEvent = nil }
+    override func mouseUp(with event: NSEvent) { cancelDrag() }
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow !== dragWindow { cancelDrag() }
+        super.viewWillMove(toWindow: newWindow)
+    }
+    private func cancelDrag() { dragStart = nil; dragWindow = nil; dragging = false }
     override func accessibilityPerformPress() -> Bool { onOpen(); return true }
     override func menu(for event: NSEvent) -> NSMenu? { contextMenu?() }
 }
@@ -180,6 +195,7 @@ final class SimulatorPreviewWindow: NSObject, NSWindowDelegate {
         let click = SimulatorPreviewClickView(frame: content.bounds)
         click.autoresizingMask = [.width, .height]
         click.onOpen = onOpen
+        click.onMove = { [weak self] in self?.recordManualPlacement() }
         click.contextMenu = { [weak self] in self?.contextMenu() ?? NSMenu() }
         click.toolTip = "더블 클릭하면 \(title) 창을 전경으로 가져옵니다"
         click.setAccessibilityElement(true)
@@ -249,6 +265,9 @@ final class SimulatorPreviewWindow: NSObject, NSWindowDelegate {
     func windowDidDeminiaturize(_ notification: Notification) { changed() }
     func windowDidMove(_ notification: Notification) {
         guard !applyingLayout, let lastLayoutFrame, panel.frame != lastLayoutFrame else { return }
+        recordManualPlacement()
+    }
+    private func recordManualPlacement() {
         manualFrame = panel.frame
         changed()
     }

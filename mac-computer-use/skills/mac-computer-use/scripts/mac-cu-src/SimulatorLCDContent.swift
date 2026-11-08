@@ -8,6 +8,7 @@ final class SimulatorGlassView: NSView {
     private var solidMode = false
     var layoutContent: ((CGRect) -> Void)?
     var cornerRadius: CGFloat = 22 { didSet { updateStyle() } }
+    var usesGlass = true { didSet { updateStyle() } }
     var tint: NSColor? { didSet { updateStyle() } }
 
     init(content: NSView, interactive: Bool = true) {
@@ -22,6 +23,7 @@ final class SimulatorGlassView: NSView {
             let material = NSVisualEffectView()
             material.material = .hudWindow
             material.blendingMode = .behindWindow
+            material.state = .followsWindowActiveState
             material.addSubview(content)
             effect = material
         }
@@ -40,7 +42,12 @@ final class SimulatorGlassView: NSView {
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); updateStyle() }
     @objc private func updateStyle() {
         let radius = min(cornerRadius, min(bounds.width, bounds.height) / 2)
-        let opaque = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+        let opaque = !usesGlass || NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+        let owningWindow = window
+        let responder = owningWindow?.firstResponder as? NSView
+        let focusOwner = ((responder as? NSTextView)?.delegate as? NSView) ?? responder
+        let restore = solidMode != opaque && (focusOwner.map { $0 === content || $0.isDescendant(of: content) } ?? false)
+        defer { if restore, let responder { owningWindow?.makeFirstResponder(responder) } }
         effect.isHidden = opaque
         solid.isHidden = !opaque
         if solidMode != opaque {
@@ -52,11 +59,13 @@ final class SimulatorGlassView: NSView {
             else if #available(macOS 26, *), effect is NSGlassEffectView {}
             else { effect.addSubview(content) }
         }
+        effectiveAppearance.performAsCurrentDrawingAppearance {
         solid.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         solid.layer?.cornerRadius = radius
         layer?.cornerRadius = radius
         layer?.borderWidth = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 2 : 0.5
         layer?.borderColor = NSColor.labelColor.withAlphaComponent(NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 0.8 : 0.18).cgColor
+        }
         if #available(macOS 26, *), let glass = effect as? NSGlassEffectView {
             glass.cornerRadius = radius
             glass.tintColor = tint
@@ -112,7 +121,7 @@ final class SimulatorLCDContentView: NSView {
         body.addSubview(lcd)
         if #available(macOS 26, *) {
             let glass = NSGlassEffectContainerView()
-            glass.spacing = 18
+            glass.spacing = 0
             glass.contentView = canvas
             container = glass
         } else { container = canvas }
@@ -127,7 +136,7 @@ final class SimulatorLCDContentView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     func animateTools(_ expanded: Bool, animated: Bool = true, completion: @escaping () -> Void) {
-        if externalToolbar {
+        if externalToolbar || tools.superview !== canvas {
             toolsVisible = expanded
             completion()
             return
@@ -154,7 +163,7 @@ final class SimulatorLCDContentView: NSView {
         let p = convert(point, from: superview)
         guard bounds.contains(p) else { return nil }
         let children: [NSView] = externalToolbar ? [chrome.resize, chrome.handle, body] : [chrome.resize, chrome.handle, chrome.controls, chrome.rail, body, tools]
-        for child in children where !child.isHidden {
+        for child in children where !child.isHidden && child.isDescendant(of: self) {
             let local = child.convert(p, from: self)
             if child === tools {
                 guard tools.clippedGlassFrames.contains(where: { $0.contains(local) }) else { continue }
@@ -174,7 +183,7 @@ final class SimulatorLCDContentView: NSView {
         super.layout()
         container.frame = bounds
         canvas.frame = bounds
-        let geometry = simulatorDeviceLayout(in: bounds.size, screen: screen, bezel: deviceAppearance.bezel, toolsVisible: !externalToolbar && (toolsVisible || transitioning), focused: focused, lcdSizeLimit: lcdSizeLimit, externalToolbar: externalToolbar)
+        let geometry = simulatorDeviceLayout(in: bounds.size, screen: screen, bezel: deviceAppearance.bezel, toolsVisible: !externalToolbar && tools.superview === canvas && (toolsVisible || transitioning), focused: focused, lcdSizeLimit: lcdSizeLimit, externalToolbar: externalToolbar, actionCount: chrome.visibleActionCount)
         body.frame = geometry.body
         body.cornerRadius = min(geometry.lcd.width, geometry.lcd.height) * screenCornerFraction + deviceAppearance.bezel
         chrome.handle.frame = geometry.handle
@@ -191,11 +200,11 @@ final class SimulatorLCDContentView: NSView {
         lcd.layer?.masksToBounds = true
         body.layoutSubtreeIfNeeded()
         lcd.frame = CGRect(origin: CGPoint(x: deviceAppearance.bezel, y: deviceAppearance.bezel), size: geometry.lcd.size)
-        if !externalToolbar {
+        if !externalToolbar && tools.superview === canvas {
             tools.frame = geometry.tools
             tools.retractionLCD = tools.convert(geometry.lcd, from: self)
         }
-        if #available(macOS 26, *), let glass = container as? NSGlassEffectContainerView { glass.spacing = tools.glassSpacing }
+        if #available(macOS 26, *), let glass = container as? NSGlassEffectContainerView { glass.spacing = 0 }
     }
 }
 

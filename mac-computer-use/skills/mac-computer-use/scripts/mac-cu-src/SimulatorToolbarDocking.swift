@@ -175,11 +175,12 @@ final class SimulatorToolbarDocking: NSObject, NSWindowDelegate {
     private var advancedVisible = false
     private var closed = false
     private var configuring = true
+    private let compactControls: Bool
     var onInputCleanup: () -> Void = {}
     var onDeviceMenu: () -> NSMenu = { NSMenu() }
     var onSettings: (() -> Void)?
     var onStateChange: () -> Void = {}
-    private var storageKey: String { "simulatorToolbarLayout.v1." + ownerID }
+    private var storageKey: String { (compactControls ? "simulatorInspectionLayout.v1." : "simulatorToolbarLayout.v1.") + ownerID }
     var panelWindowNumbers: Set<Int> { Set(([toolbar] + Array(panels.values)).filter { $0.isVisible }.map(\.windowNumber)) }
     var opaqueWindowShapes: [Int: [CGRect]] {
         var shapes: [Int: [CGRect]] = [:]
@@ -203,16 +204,18 @@ final class SimulatorToolbarDocking: NSObject, NSWindowDelegate {
     }
 
     init(ownerID: String, name: String, device: NSWindow, chrome: SimulatorDeviceChrome,
-         tools: SimulatorToolboxView, defaults: UserDefaults = .standard) {
+         tools: SimulatorToolboxView, defaults: UserDefaults = .standard, compactControls: Bool = false) {
+        self.compactControls = compactControls
         self.ownerID = ownerID; deviceName = name
         self.device = device; self.tools = tools; self.defaults = defaults
         toolbarGrip = SimulatorToolbarGrip(title: name + " · 메인 도구")
         backdrop = SimulatorGlassView(content: root)
         super.init()
-        chrome.enableFloatingModules()
+        if !compactControls { chrome.enableFloatingModules() }
+        if compactControls { backdrop.usesGlass = false }
         tools.removeFromSuperview()
         tools.setFloatingPresentation(false)
-        modules = [
+        if !compactControls { modules = [
             .init(key: "information", title: "기기 정보", content: chrome.information, height: 58),
             .init(key: "basic", title: "기본 조작", content: chrome.controls, height: 64),
             .init(key: "input", title: "보조 입력", content: chrome.rail, height: 64),
@@ -220,7 +223,11 @@ final class SimulatorToolbarDocking: NSObject, NSWindowDelegate {
             .init(key: "advanced", title: "고급 도구", content: tools, height: simulatorToolboxHeight),
             .init(key: "status", title: "상태와 응답", content: chrome.activity, height: 62)
         ]
-        toolbar.title = name + " · 메인 도구"
+        }
+        if compactControls {
+            modules = [.init(key: "advanced", title: "검사 도구", content: tools, height: simulatorToolboxHeight)]
+        }
+        toolbar.title = name + (compactControls ? " · 검사 도구" : " · 메인 도구")
         toolbar.contentView = backdrop
         toolbar.delegate = self
         root.addSubview(toolbarGrip)
@@ -231,6 +238,7 @@ final class SimulatorToolbarDocking: NSObject, NSWindowDelegate {
         toolbarGrip.menuBuilder = { [weak self] in self?.menu() ?? NSMenu() }
         configure(grip: toolbarGrip, key: nil)
         for module in modules {
+            if compactControls { module.subviews.compactMap { $0 as? SimulatorGlassView }.forEach { $0.usesGlass = false } }
             module.grip.label.stringValue = "⠿  " + module.title + " · " + name
             module.grip.label.setAccessibilityLabel(name + " · " + module.title + " · 드래그로 분리 또는 재결합")
             module.grip.menuBuilder = { [weak self, weak module] in self?.menu(module: module?.key) ?? NSMenu() }
@@ -355,7 +363,11 @@ final class SimulatorToolbarDocking: NSObject, NSWindowDelegate {
         }
     }
     func showStatusResponse() {
+        if compactControls {
+            setAdvancedVisible(true); resume(); tools.showResponse(from: toolbarGrip); return
+        }
         guard let module = modules.first(where: { $0.key == "status" }) else { return }
+        if compactControls { setAdvancedVisible(true) }
         resume()
         if panels["status"] == nil { document.scrollToVisible(module.frame) }
         tools.showResponse(from: module.content)
@@ -377,7 +389,7 @@ final class SimulatorToolbarDocking: NSObject, NSWindowDelegate {
     func resume() { guard !closed else { return }; suspended = false; updateVisibility() }
     func suspend() { cleanup(); suspended = true; cancelDrags(); updateVisibility() }
     private func updateVisibility() {
-        let visible = !closed && !suspended && !focused && device?.isVisible == true && device?.isMiniaturized != true
+        let visible = !closed && !suspended && !focused && device?.isVisible == true && device?.isMiniaturized != true && (!compactControls || advancedVisible)
         if visible { toolbar.orderFront(nil) } else { toolbar.orderOut(nil) }
         for (key, panel) in panels {
             if visible && (key != "advanced" || advancedVisible) { panel.orderFront(nil) }

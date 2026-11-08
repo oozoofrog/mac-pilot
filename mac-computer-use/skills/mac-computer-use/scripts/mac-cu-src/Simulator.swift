@@ -20,7 +20,12 @@ final class HIDLink {
     let deviceID: String
     let connection: xpc_connection_t
     let size: CGSize  // The screen in points.
-    var closed = false
+    private let statusLock = NSLock()
+    private var isClosed = false
+    var closed: Bool {
+        get { statusLock.lock(); defer { statusLock.unlock() }; return isClosed }
+        set { statusLock.lock(); defer { statusLock.unlock() }; isClosed = newValue }
+    }
 
     init(connection: xpc_connection_t, size: CGSize, deviceID: String) {
         self.connection = connection
@@ -28,7 +33,9 @@ final class HIDLink {
         self.deviceID = deviceID
     }
 
-    func send(_ type: String, _ payload: xpc_object_t, feature: String = hidService) {
+    @discardableResult
+    func send(_ type: String, _ payload: xpc_object_t, feature: String = hidService) -> Bool {
+        guard !closed else { return false }
         let message = xpc_dictionary_create(nil, nil, 0)
         xpc_dictionary_set_string(message, "messageType", type)
         xpc_dictionary_set_bool(message, "isBarrier", false)
@@ -37,7 +44,7 @@ final class HIDLink {
         xpc_connection_send_message(connection, message)
         let done = DispatchSemaphore(value: 0)
         xpc_connection_send_barrier(connection) { done.signal() }
-        _ = done.wait(timeout: .now() + 2)
+        return done.wait(timeout: .now() + 2) == .success && !closed
     }
 
     /// A USB HID keyboard usage (page 7).
@@ -96,7 +103,7 @@ final class HIDLink {
     /// A control of a foldable device (Device Hub's hinge slider and orientation picker): a vendor-defined HID event
     /// (page 0xff61, usage 0x5b) whose data is a serialized dictionary. dtuhidd takes it on any of its HID connections and
     /// gives it to the device's avpCustom service (0x500). Format from the strings of Device Hub's CoreDevicePopDeviceKitExtension.
-    func deviceControl(_ source: String, _ type: String, _ value: Any) {
+    func deviceControl(_ source: String, _ type: String, _ value: Any) throws {
         let report: [String: Any] = ["provider": "com.apple.Virtualization.VirtualMachines", "source": source, "type": type, "value": value]
         let data = IOCFSerialize(report as CFDictionary, 1) as Data
         let payload = xpc_dictionary_create(nil, nil, 0)
@@ -104,7 +111,9 @@ final class HIDLink {
         xpc_dictionary_set_uint64(payload, "usage", 0x5b)
         xpc_dictionary_set_uint64(payload, "version", 0)
         data.withUnsafeBytes { xpc_dictionary_set_data(payload, "data", $0.baseAddress!, data.count) }
-        send("IndigoVendorDefinedEvent", payload, feature: vendorService)
+        guard send("IndigoVendorDefinedEvent", payload, feature: vendorService) else {
+            throw ToolError("The device control could not be delivered. Read the device state before retrying.")
+        }
     }
 
     /// Turns the Digital Crown of an Apple Watch as Device Hub does for a mouse wheel over the crown (DeviceKit's "Crown
@@ -140,6 +149,8 @@ final class HIDLink {
 }
 
 var hidLinks: [String: HIDLink] = [:]
+// Serialized by handleQueue; survives LCD close/reopen, shared by absolute and relative commands.
+var simulatorRotationStates: [String: SimulatorRotationState] = [:]
 
 // MARK: - CoreSimulator
 
@@ -218,19 +229,30 @@ func simulatorConnection(_ device: NSObject, _ service: String) throws -> xpc_co
     return connection
 }
 
+/// A replaced connection may report its cancellation after the new link is already in use.
+func simulatorHIDConnectionFailed(_ link: HIDLink, deviceID id: String) {
+    link.closed = true
+    handleQueue.async {
+        guard hidLinks[id] === link else { return }
+        invalidateSimulatorObservation(id)
+        showSimulatorTouches(id, contacts: [], screen: nil)
+    }
+}
+
 func hidLink(for device: NSObject) throws -> HIDLink {
     let id = udid(of: device)
     if let link = hidLinks[id], !link.closed { return link }
+    invalidateSimulatorObservation(id)
     let connection = try simulatorConnection(device, hidService)
     let link = HIDLink(connection: connection, size: screenSize(of: device), deviceID: id)
     xpc_connection_set_event_handler(connection) { event in
         if xpc_get_type(event) == XPC_TYPE_ERROR {
-            link.closed = true
-            showSimulatorTouches(id, contacts: [], screen: nil)
+            simulatorHIDConnectionFailed(link, deviceID: id)
         }
     }
     xpc_connection_resume(connection)
     hidLinks[id] = link
+    // Reconnecting input must not reset the visible device pose or advance a failed request.
     // The first message makes the devices. A Shift release changes nothing; then iOS sets them up.
     link.key(0xE1, down: false)
     usleep(1_000_000)
@@ -247,9 +269,20 @@ struct ActiveScreen {
     let name: String
     let target: UInt64       // its touchscreen
     let unrotated: CGSize    // points before rotation
-    let rotation: String     // rot0, rot90, rot180 or rot270
+    var rotation: String     // Host presentation: rot0, rot90, rot180 or rot270
     var foldable = true      // more than one integrated screen (iPhone Duo); false for a turned device with one
     var primary = false      // CoreDevice's primary screen: the cover of iPhone Duo
+    var framebufferRotation: String? = nil // Actual guest readback, when presentation differs.
+    var guestRotation: String { framebufferRotation ?? rotation }
+    var presentationQuarterTurns: Int { (rotationQuarterTurns(rotation) - rotationQuarterTurns(guestRotation) + 4) % 4 }
+    var guestPoints: CGSize {
+        guestRotation == "rot90" || guestRotation == "rot270" ? CGSize(width: unrotated.height, height: unrotated.width) : unrotated
+    }
+    /// App AX frames and simctl images already follow the guest's orientation.
+    func presentingGuestFrame(_ frame: CGRect) -> CGRect {
+        ActiveScreen(id: id, name: name, target: target, unrotated: guestPoints,
+                     rotation: "rot\(presentationQuarterTurns * 90)").shown(frame)
+    }
 
     /// The screen in points as it is shown: the pixels of its screenshot.
     var points: CGSize {
@@ -286,46 +319,118 @@ var touchscreenTargets: [String: [String: UInt64]] = [:]
 
 /// The screen that is on, for a device with more than one integrated screen (iPhone Duo) or one that is turned; nil for a
 /// device with one screen that is not turned. CoreDevice is asked at each action (0.15 s), since a fold or turn can come from anywhere.
-func activeScreen(of device: NSObject) throws -> ActiveScreen? {
+func activeScreen(of device: NSObject, readback: [[String: Any]]? = nil) throws -> ActiveScreen? {
     let id = udid(of: device)
-    // shortcut: without devicectl's answer, touches go to the main screen as before; fine for one screen.
-    guard let displays = displays(of: id) else { return nil }
+    // A synchronous read supersedes any earlier passive read, including external pose changes.
+    simulatorObserver(id).invalidate()
+    guard let raw = readback ?? displays(of: id) else { return nil }
+    if touchscreenTargets[id] == nil,
+       raw.filter({ ($0["type"] as? [String: Any])?["integrated"] != nil }).count > 1 {
+        touchscreenTargets[id] = try touchscreens(of: device)
+    }
+    var state = simulatorRotationStates[id] ?? SimulatorRotationState()
+    state.observe(SimulatorRotationObservation.read(raw))
+    simulatorRotationStates[id] = state
+    return try simulatorScreen(raw, targets: touchscreenTargets[id] ?? [:], pose: state.presentation)
+}
+
+/// Pure snapshot projection. Background readers never touch HID links, session, rotation state or target caches.
+func simulatorScreen(_ displays: [[String: Any]], targets: [String: UInt64], pose: SimulatorOrientation?) throws -> ActiveScreen? {
     let integrated = displays.filter { ($0["type"] as? [String: Any])?["integrated"] != nil }
-    if integrated.count == 1 {
-        // One screen: its touchscreen is the main one (target 0); only its rotation matters.
-        let only = integrated[0]
-        guard let rotation = only["currentOrientation"] as? String, rotation != "rot0",
-              let bounds = only["bounds"] as? [[NSNumber]], bounds.count == 2, bounds[1].count == 2,
-              let scale = (only["pointScale"] as? NSNumber)?.doubleValue, scale > 0
-        else { return nil }
-        return ActiveScreen(id: "\(only["displayId"] ?? "")", name: only["name"] as? String ?? "main", target: 0,
-                            unrotated: CGSize(width: bounds[1][0].doubleValue / scale, height: bounds[1][1].doubleValue / scale),
-                            rotation: rotation, foldable: false)
-    }
-    guard integrated.count > 1 else { return nil }
-    guard let on = integrated.first(where: { $0["active"] as? Bool == true }), let uniqueID = on["uniqueId"] as? String,
+    guard !integrated.isEmpty else { return nil }
+    guard let on = integrated.first(where: { $0["active"] as? Bool == true }),
           let bounds = on["bounds"] as? [[NSNumber]], bounds.count == 2, bounds[1].count == 2,
-          let scale = (on["pointScale"] as? NSNumber)?.doubleValue, scale > 0
-    else { throw ToolError("No screen of the simulator is on. Press the lock button to wake it, then try again.") }
-    let name = on["name"] as? String ?? uniqueID
-    if touchscreenTargets[id]?[uniqueID] == nil { touchscreenTargets[id] = try touchscreens(of: device) }
-    guard let target = touchscreenTargets[id]?[uniqueID] else {
-        throw ToolError("The screen \(name) that is on has no touchscreen of its own, so mac-cu cannot touch it. Use screenshot.")
+          let scale = (on["pointScale"] as? NSNumber)?.doubleValue, scale > 0 else {
+        throw ToolError("No screen of the simulator is on. Press the lock button to wake it, then try again.")
     }
-    return ActiveScreen(id: "\(on["displayId"] ?? "")", name: name, target: target,
-                        unrotated: CGSize(width: bounds[1][0].doubleValue / scale, height: bounds[1][1].doubleValue / scale),
-                        rotation: on["currentOrientation"] as? String ?? "rot0", primary: on["primary"] as? Bool ?? false)
+    let foldable = integrated.count > 1
+    let rotation = on["currentOrientation"] as? String ?? "rot0"
+    if !foldable && rotation == "rot0" { return nil }
+    let target = foldable ? (on["uniqueId"] as? String).flatMap { targets[$0] } : 0
+    guard let target else { throw ToolError("The active screen has no known touchscreen. Refresh the device connection.") }
+    var screen = ActiveScreen(id: "\(on["displayId"] ?? "")", name: on["name"] as? String ?? "main", target: target,
+        unrotated: CGSize(width: bounds[1][0].doubleValue / scale, height: bounds[1][1].doubleValue / scale),
+        rotation: rotation, foldable: foldable, primary: on["primary"] as? Bool ?? false)
+    if foldable, let pose {
+        screen.framebufferRotation = rotation
+        screen.rotation = pose.screenRotation(inner: !screen.primary)
+    }
+    return screen
+}
+
+struct SimulatorObservedScreen {
+    let booted: Bool
+    let screen: ActiveScreen?
+    let angle: Double?
+    var rotationObservation: SimulatorRotationObservation? = nil
+}
+private let simulatorObservationLock = NSLock()
+private var simulatorObservationLanes: [String: SimulatorObservationLane<SimulatorObservedScreen>] = [:]
+private var simulatorAngleLanes: [String: SimulatorObservationLane<Double>] = [:]
+func simulatorAngleObserver(_ id: String) -> SimulatorObservationLane<Double> {
+    simulatorObservationLock.withLock {
+        if let lane = simulatorAngleLanes[id] { return lane }
+        let lane = SimulatorObservationLane<Double>(); simulatorAngleLanes[id] = lane; return lane
+    }
+}
+func invalidateSimulatorObservation(_ id: String) {
+    simulatorObserver(id).invalidate(); simulatorAngleObserver(id).invalidate()
+}
+func simulatorObserver(_ id: String) -> SimulatorObservationLane<SimulatorObservedScreen> {
+    simulatorObservationLock.withLock {
+        if let lane = simulatorObservationLanes[id] { return lane }
+        let lane = SimulatorObservationLane<SimulatorObservedScreen>()
+        simulatorObservationLanes[id] = lane
+        return lane
+    }
+}
+
+/// Called on handleQueue; captures immutable mapping, then all slow status IO runs off that queue.
+func observeSimulator(_ device: NSObject, for seconds: TimeInterval = 0) {
+    let id = udid(of: device), lane = simulatorObserver(udid(of: device))
+    let targets = touchscreenTargets[id] ?? [:], pose = simulatorRotationStates[id]?.presentation
+    let ticket = lane.ticket
+    let window = DispatchQueue.main.sync { simulatorWindows[id] }
+    lane.observe(for: seconds, read: { task in
+        guard isBooted(device) else { return SimulatorObservedScreen(booted: false, screen: nil, angle: nil) }
+        guard let raw = displays(of: id, task: task), !task.isCancelled,
+              case let .success(projected) = Result(catching: { try simulatorScreen(raw, targets: targets, pose: pose) }) else { return nil }
+        return SimulatorObservedScreen(booted: true, screen: projected, angle: nil, rotationObservation: SimulatorRotationObservation.read(raw))
+    }, receive: { [weak window] value in
+        guard let window, simulatorWindows[id] === window else { return }
+        guard value.booted else { window.window.close(); return }
+        window.show(value.screen)
+        window.observedRotation(value.rotationObservation)
+        handleQueue.async {
+            guard lane.isCurrent(ticket) else { return }
+            var state = simulatorRotationStates[id] ?? SimulatorRotationState()
+            state.observe(value.rotationObservation)
+            simulatorRotationStates[id] = state
+        }
+        if !window.toolbox.busy && !window.toolbox.manualPending { window.pointerGeometryReady = true }
+    })
+    if !targets.isEmpty {
+        simulatorAngleObserver(id).observe(for: seconds, read: { task in
+            guard isBooted(device), !task.isCancelled else { return nil }
+            return try? hingeAngle(of: device, cancelled: { task.isCancelled })
+        }, receive: { [weak window] angle in
+            guard let window, simulatorWindows[id] === window else { return }
+            window.toolbox.updateAngle(angle); window.content.chrome.updateAngle(angle)
+        })
+    }
 }
 
 /// The hinge angle in degrees of a foldable simulator: the first sample of CoreDevice's streamhingeangle action, which
 /// dtdeviceinfod in the simulator serves. The message is CoreDevice's action invocation; each key below was found by sending
 /// it without that key and reading dtdeviceinfod's decoding error.
-func hingeAngle(of device: NSObject) throws -> Double {
+func hingeAngle(of device: NSObject, cancelled: () -> Bool = { false }) throws -> Double {
     let feature = "com.apple.coredevice.feature.monitormotion"
     let connection = try simulatorConnection(device, feature)
     let sample = DispatchSemaphore(value: 0)
+    let valueLock = NSLock()
     var angle: Double?, failure = ""
     xpc_connection_set_event_handler(connection) { event in
+        valueLock.lock(); defer { valueLock.unlock() }
         guard xpc_get_type(event) == XPC_TYPE_DICTIONARY else { return }
         if let error = xpc_dictionary_get_dictionary(event, "CoreDevice.error"),
            let info = xpc_dictionary_get_dictionary(error, "userInfo"), let text = xpc_dictionary_get_string(info, "NSDebugDescription") {
@@ -377,10 +482,15 @@ func hingeAngle(of device: NSObject) throws -> Double {
         ]),
     ])
     xpc_connection_send_message(connection, message)
-    guard sample.wait(timeout: .now() + 5) == .success, let angle else {
-        throw ToolError("The simulator did not give its hinge angle\(failure.isEmpty ? "" : ": \(failure)").")
+    let deadline = ProcessInfo.processInfo.systemUptime + 5
+    while !cancelled(), ProcessInfo.processInfo.systemUptime < deadline {
+        if sample.wait(timeout: .now() + 0.05) == .success {
+            if let result = valueLock.withLock({ angle }) { return result }
+            break
+        }
     }
-    return angle
+    let reason = valueLock.withLock { failure }
+    throw ToolError("The simulator did not give its hinge angle\(reason.isEmpty ? "" : ": \(reason)").")
 }
 
 /// The touchscreen target of each screen (by its unique ID), from the universal HID service's connected services:
@@ -585,13 +695,17 @@ func builtInScreens(_ id: String) -> [SimulatorScreen] {
 /// A JPEG of the simulator screen as base64, scaled to the screen's points: a pixel of it is a point for tap.
 /// With display, the picture of that screen; its points can be the other way round when the screen is turned.
 /// With guides (element frames in points), the measurement guides are drawn on it.
-func simulatorScreenshot(_ id: String, size: CGSize, display: String? = nil, guides: [GuideBox]? = nil) throws -> String {
+func simulatorScreenshot(_ id: String, size: CGSize, display: String? = nil, guides: [GuideBox]? = nil, presentation: ActiveScreen? = nil) throws -> String {
     let file = FileManager.default.temporaryDirectory.appendingPathComponent("mac-cu-\(id)-\(display ?? "main").png")
     defer { try? FileManager.default.removeItem(at: file) }
     let result = shell("/usr/bin/xcrun", ["simctl", "io", id, "screenshot"] + (display.map { ["--display=\($0)"] } ?? []) + [file.path])
     guard result.status == 0, let image = NSImage(contentsOf: file),
           let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
         throw ToolError("No screenshot: \(result.output)")
+    }
+    if let presentation {
+        let shown = try simulatorRotatedImage(cgImage, quarterTurns: presentation.presentationQuarterTurns)
+        return try jpegBase64(shown, size: presentation.points, guides: guides)
     }
     let turned = display != nil && (cgImage.width > cgImage.height) != (size.width > size.height)
     return try jpegBase64(cgImage, size: turned ? CGSize(width: size.height, height: size.width) : size, guides: guides)
@@ -641,19 +755,29 @@ func simulatorTool(_ arguments: [String: Any]) throws -> [String: Any] {
 /// Both tool buttons and MCP use the existing backend, serialized on handleQueue.
 func executeSimulatorCommand(_ arguments: [String: Any], device: NSObject, activity: SimulatorToolActivity) throws -> [String: Any] {
     let id = udid(of: device)
-    DispatchQueue.main.async { simulatorWindows[id]?.commandStarted(activity) }
+    let window = DispatchQueue.main.sync { simulatorWindows[id] }
+    // Mutations revoke operation observations; synchronous screen reads also supersede older display samples.
+    let mutation = ["rotate", "button", "gesture", "tap", "swipe", "press", "key", "type", "paste", "crown"].contains(activity.action)
+        || (activity.action == "hinge" && (arguments["degrees"] != nil || arguments["state"] != nil))
+    if mutation { invalidateSimulatorObservation(id) }
+    DispatchQueue.main.async { [weak window] in window?.commandStarted(activity) }
     do {
-        let result = try simulatorDeviceTool(arguments, device: device)
-        if ["hinge", "rotate", "button"].contains(activity.action),
-           case let .success(screen) = Result(catching: { try activeScreen(of: device) }) {
-            DispatchQueue.main.async { simulatorWindows[id]?.show(screen) }
+        let poseChange = activity.action == "rotate" || (activity.action == "hinge" && mutation)
+        if poseChange, let cleanup = DispatchQueue.main.sync(execute: { window?.takeInputForPoseChange() }),
+           !cleanup.keys.isEmpty || !cleanup.contacts.isEmpty {
+            let link = try hidLink(for: device)
+            for key in cleanup.keys { link.key(key, down: false) }
+            for contact in cleanup.contacts { link.touch(contact.0, phase: 2, screen: cleanup.screen, second: contact.1) }
         }
-        DispatchQueue.main.async { simulatorWindows[id]?.commandFinished(activity, response: result) }
+        let result = try simulatorDeviceTool(arguments, device: device)
+        if ["hinge", "rotate", "button"].contains(activity.action) { observeSimulator(device, for: 4) }
+        DispatchQueue.main.async { [weak window] in window?.commandFinished(activity, response: result) }
         return result
     } catch {
+        if mutation { invalidateSimulatorObservation(id); observeSimulator(device, for: 4) }
         let message = (error as? ToolError)?.message ?? error.localizedDescription
-        DispatchQueue.main.async {
-            simulatorWindows[id]?.commandFinished(activity, response: ["isError": true, "content": [["type": "text", "text": message]]])
+        DispatchQueue.main.async { [weak window] in
+            window?.commandFinished(activity, response: ["isError": true, "content": [["type": "text", "text": message]]])
         }
         throw error
     }
@@ -663,7 +787,9 @@ private func simulatorDeviceTool(_ arguments: [String: Any], device: NSObject) t
     let action = arguments["action"] as? String ?? ""
     func text(_ value: String) -> [String: Any] { ["content": [["type": "text", "text": value]]] }
     let id = udid(of: device)
-    let screen = try simulatorCommandNeedsActiveScreen(action) ? activeScreen(of: device) : nil
+    let snapshotStarted = ProcessInfo.processInfo.systemUptime
+    let raw = simulatorCommandNeedsActiveScreen(action) ? displays(of: id) : nil
+    let screen = try simulatorCommandNeedsActiveScreen(action) ? activeScreen(of: device, readback: raw) : nil
     if action == "screenshot" {
         let size = screen?.points ?? screenSize(of: device)
         let name = device.value(forKey: "name") ?? id
@@ -695,7 +821,7 @@ private func simulatorDeviceTool(_ arguments: [String: Any], device: NSObject) t
         for picture in screens {
             let used = screen.map { picture.id == $0.id } ?? (picture.points == size)
             content.append(["type": "text", "text": "Screen \(picture.id) \(picture.name)\(used ? " (on: its pixels are the x and y of tap and swipe)" : ""):"])
-            content.append(["type": "image", "data": try simulatorScreenshot(id, size: picture.points, display: picture.id, guides: used ? guides : nil), "mimeType": "image/jpeg"])
+            content.append(["type": "image", "data": try simulatorScreenshot(id, size: picture.points, display: picture.id, guides: used ? guides : nil, presentation: used ? screen : nil), "mimeType": "image/jpeg"])
         }
         return ["content": content + guideList]
     }
@@ -716,18 +842,7 @@ private func simulatorDeviceTool(_ arguments: [String: Any], device: NSObject) t
         return text("Found: \(found.line)\(others)")
     }
     func shownScreen(_ s: ActiveScreen?) -> String {
-        s.map { "\($0.name) (screen \($0.id), \(Int($0.points.width))×\(Int($0.points.height)) points, \($0.rotation))" } ?? "none"
-    }
-    /// The screen that is on once a fold or turn has settled: the first answer that differs from before, or the last after 3 s.
-    func settledScreen(after before: ActiveScreen?) -> String {
-        var now = before
-        for _ in 0..<12 {
-            usleep(250_000)
-            guard let s = try? activeScreen(of: device) else { continue }  // No screen is on while the fold swaps them.
-            now = s
-            if s.id != before?.id || s.rotation != before?.rotation { usleep(700_000); break }  // Let the swap or turn animation end.
-        }
-        return shownScreen(now)
+        s.map { "\($0.name) (screen \($0.id), \(Int($0.points.width))×\(Int($0.points.height)) points, host \($0.rotation), guest \($0.guestRotation))" } ?? "none"
     }
     if action == "window" {
         return text(try simulatorWindowAction(device, active: screen, close: arguments["close"] as? Bool ?? false))
@@ -745,49 +860,72 @@ private func simulatorDeviceTool(_ arguments: [String: Any], device: NSObject) t
             return text("Hinge at \(try hingeAngle(of: device))°. The screen that is on: \(shownScreen(screen)).")
         }
         guard (0...180).contains(degrees) else { throw ToolError("degrees is 0 (closed) to 180 (open flat).") }
+        // Both observations are fresh in this request. A stale/unknown angle cannot skip a trajectory.
+        let from = try hingeAngle(of: device)
+        if ProcessInfo.processInfo.systemUptime - snapshotStarted < 0.5,
+           simulatorHingeAlreadySatisfied(target: degrees, angle: from, primary: screen?.primary) {
+            var result = text("Hinge already at \(from)°. Active screen verified: \(shownScreen(screen)). No motion was sent.")
+            result["structuredContent"] = ["hinge": ["requestedDegrees": degrees, "observedDegrees": from, "alreadySatisfied": true, "confirmationPending": false]]
+            return result
+        }
         let link = try hidLink(for: device)
-        // Move the hinge as a hand or Device Hub's slider does: through the angles in between at 60 Hz (about 180° a
-        // second). SpringBoard's display content mode follows the motion; a jump to the end left the inner screen on
-        // after a fold to 0° (its DCMPose never logged the new angle).
-        let from = (try? hingeAngle(of: device)) ?? degrees
+        observeSimulator(device, for: 6)
+        // Keep continuous 3-degree steps and endpoint hold; observation does not own this input lane.
         let steps = max(1, Int((abs(degrees - from) / 3).rounded(.up)))
         for step in 1...steps {
-            link.deviceControl("hinge-slider-control", "range", from + (degrees - from) * Double(step) / Double(steps))
+            try link.deviceControl("hinge-slider-control", "range", from + (degrees - from) * Double(step) / Double(steps))
             usleep(16_000)
         }
         // SpringBoard smooths the hinge readings; one event can leave it short of the angle (seen: 5.9° for 0°), so hold the end.
-        for _ in 0..<10 { link.deviceControl("hinge-slider-control", "range", degrees); usleep(50_000) }
-        let now = settledScreen(after: screen)
-        // Closed with the inner screen on, or open with the cover on: SpringBoard stopped following the hinge (seen after
-        // a jump from an older mac-cu or another tool); sleeping and waking the device makes it follow again.
-        let after = (try? activeScreen(of: device)) ?? nil
-        let ignored = after.map { (degrees <= 30 && !$0.primary) || (degrees >= 150 && $0.primary) } ?? false
-        return text("Sent the hinge to \(degrees)°; it reads \(try hingeAngle(of: device))°. The screen that is on: \(now)." + (ignored ? """
-             The \(degrees <= 30 ? "cover" : "inner screen") did not come on: SpringBoard is not following the hinge. Press \
-            the lock button twice (button lock, then button lock again) and send the hinge again.
-            """ : ""))
+        for _ in 0..<10 { try link.deviceControl("hinge-slider-control", "range", degrees); usleep(50_000) }
+        invalidateSimulatorObservation(id)
+        var result = text("Delivered continuous hinge motion to \(degrees)° and the endpoint hold. Actual angle/display confirmation is pending; read hinge or inspect the LCD for observed state.")
+        result["structuredContent"] = ["hinge": ["requestedDegrees": degrees, "delivered": true, "alreadySatisfied": false, "confirmationPending": true]]
+        return result
     }
+
     if action == "rotate" {
-        // Device names of the orientation: the Device Hub picker's, and devicectl's.
-        let names = ["portrait": ("portrait", "portrait"), "landscape-left": ("landscape-left", "landscapeLeft"),
-                     "landscape-right": ("landscape-right", "landscapeRight"), "upside-down": ("pud", "portraitUpsideDown")]
-        let name = (arguments["orientation"] as? String ?? "").lowercased()
-        guard let (picker, devicectl) = names[name] else {
+        // Relative direction is an internal toolbar request, resolved on the same serialized queue
+        // as MCP's absolute orientations. The UI must not compute it from a fixed cover framebuffer.
+        let direction = arguments["direction"] as? String
+        let absolute = (arguments["orientation"] as? String).flatMap { SimulatorOrientation(rawValue: $0.lowercased()) }
+        guard (direction == "clockwise" && arguments["orientation"] == nil) || (direction == nil && absolute != nil) else {
             throw ToolError("orientation is one of: portrait, landscape-left, landscape-right, upside-down.")
         }
-        if screen?.foldable == true {
-            // devicectl orientation set answers success on iPhone Duo but changes nothing; its picker does.
-            try hidLink(for: device).deviceControl("orientation-picker-control", "enum", picker)
-            return text("Turned the device to \(name). The screen that is on: \(settledScreen(after: screen)). The front app turns only to the orientations it supports.")
+        guard let before = raw.flatMap(SimulatorRotationObservation.read) else {
+            throw ToolError("Cannot read the active display before rotating. No orientation request was sent.")
         }
-        func shownOrientation() -> String { displays(of: id)?.first?["currentOrientation"] as? String ?? "unknown" }
-        let before = shownOrientation()
-        let result = shell("/usr/bin/xcrun", ["devicectl", "device", "orientation", "set", "--device", id, devicectl, "--quiet"])
-        guard result.status == 0 else { throw ToolError("devicectl could not turn the device: \(result.output)") }
-        var shown = before
-        for _ in 0..<20 where shown == before { usleep(250_000); shown = shownOrientation() }
-        if shown != before { usleep(700_000) }  // A screenshot during the turn animation is skewed.
-        return text("Turned the device to \(name); the screen shows \(shown). The front app turns only to the orientations it supports.")
+        let link = before.foldable ? try hidLink(for: device) : nil
+        var state = simulatorRotationStates[id] ?? SimulatorRotationState()
+        state.observe(before)
+        let assumedPortrait = direction != nil && state.reference == nil
+        let target = absolute ?? state.nextClockwise
+        try state.deliver(target, after: before, presentsDevice: before.foldable) {
+            if let link {
+                // A barrier proves local delivery only, not guest acknowledgement or screen rotation.
+                try link.deviceControl("orientation-picker-control", "enum", target.picker)
+            } else {
+                let result = shell("/usr/bin/xcrun", ["devicectl", "device", "orientation", "set", "--device", id, target.devicectl, "--quiet"])
+                guard result.status == 0 else { throw ToolError("devicectl could not send the orientation: \(result.output)") }
+            }
+        }
+        simulatorRotationStates[id] = state
+        let lane = simulatorObserver(id), ticket = lane.invalidate()
+        // Successful local delivery commits host geometry before passive guest observation.
+        if let raw, let presented = try simulatorScreen(raw, targets: touchscreenTargets[id] ?? [:], pose: state.presentation) {
+            let window = DispatchQueue.main.sync { simulatorWindows[id] }
+            DispatchQueue.main.async { [weak window] in
+                if lane.isCurrent(ticket) { window?.show(presented) }
+            }
+        }
+        var detail: [String: Any] = ["requestedOrientation": target.rawValue, "screenConfirmed": false,
+            "assumedPortrait": assumedPortrait, "screenChanged": false, "delivered": true,
+            "confirmationPending": true, "screenOrientation": before.rotation]
+        if before.foldable { detail["presentationOrientation"] = target.screenRotation(inner: !before.primary) }
+        let basis = assumedPortrait ? " No reliable starting pose was available; this clockwise request used portrait as its starting reference." : ""
+        var result = text("Delivered orientation request \(target.rawValue). Guest orientation confirmation is pending; the last observed framebuffer was \(before.rotation).\(basis) The front app turns only to the orientations it supports.")
+        result["structuredContent"] = ["rotation": detail]
+        return result
     }
     if action == "views" {
         // The app: by bundle id from launchctl, or the front app.

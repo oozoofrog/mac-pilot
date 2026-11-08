@@ -16,3 +16,11 @@ The app remains at `~/Library/Application Support/mac-cu/mac-cu.app`, with its e
 Simulator Pilot builds its Swift CLI into `~/.local/bin/sim-pilot`. Xcode and the target simulator runtime must already be installed. Screen interaction uses mac-cu's simulator tool (Xcode 27+). Follow [Simulator Pilot setup](../simulator-pilot/skills/simulator-pilot/SKILL.md) and project build instructions.
 
 The local MCP app, enabled Plugin, installed skill path and fresh-session tool list are separate. Start a new chat after changing Plugins or MCP registration. Confirm the new installed skill path and `decide` tool's OpenAI description. Key-based Decisions connectivity can be checked with synthetic text; do not send private windows as a connection test.
+
+## Local delivery after development
+
+The workspace user has given standing authorization to build and replace the global mac-cu app after completed implementation work, so they can verify it. Complete isolated source/UI checks first; this is a delivery step, not a substitute for those checks.
+
+Use the canonical setup build/signing implementation and keep its manifest-relative resources. Prepare and verify a staged app before stopping the installed daemon, back up the previous bundle outside Git, preserve the existing bundle/signing identity, then replace the app and gracefully restart it. When MCP already points at the stable global executable, an app-only replacement need not rewrite agent registrations, Plugin caches or browser configuration. Keep user profiles, allow lists, permissions, Keychain entries, captures and simulator data intact.
+
+Read back both the installed bundle version and the running daemon's MCP version, check existing permissions, and confirm the manager's user-facing entry. Record the backup path and actual verification results. Local replacement does not imply a commit, push, marketplace release, updated Plugin cache or fresh-session skill exposure.

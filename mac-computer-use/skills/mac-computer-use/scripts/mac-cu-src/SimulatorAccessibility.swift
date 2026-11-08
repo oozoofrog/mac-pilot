@@ -152,7 +152,7 @@ func simulatorElements(_ device: NSObject, screen active: ActiveScreen?, maxElem
     // On a turned screen (iPhone Duo's inner screen), apps give frames as the screen is shown, but SpringBoard gives
     // them on the screen before rotation.
     let pid = (translation.value(forKey: "pid") as? NSNumber)?.int32Value ?? 0
-    let turn = active.flatMap { $0.rotation != "rot0" && isSpringBoard(pid) ? $0 : nil }
+    let turn = isSpringBoard(pid) ? active : nil
     func string(_ object: NSObject, _ key: String) -> String {
         guard let value = object.value(forKey: key) else { return "" }
         return (value as? String) ?? "\(value)"
@@ -164,13 +164,13 @@ func simulatorElements(_ device: NSObject, screen active: ActiveScreen?, maxElem
         let frame = (element.value(forKey: "accessibilityFrame") as? NSValue)?.rectValue ?? .zero
         // On iPhone Duo's inner screen an app gives its children as shown, but its own (root) frame as the screen
         // before rotation; a turned iPhone gives the root as shown too, so only a root of the unrotated size is turned.
-        let rootTurn = depth == 0 && active.map { ($0.rotation == "rot90" || $0.rotation == "rot270") && frame.size == $0.unrotated } == true
+        let rootTurn = depth == 0 && active.map { ($0.guestRotation == "rot90" || $0.guestRotation == "rot270") && frame.size == $0.unrotated } == true
         elements.append(SimulatorElement(
             role: role.hasPrefix("AX") ? String(role.dropFirst(2)) : role,
             label: string(element, "accessibilityLabel"),
             identifier: string(element, "accessibilityIdentifier"),
             value: string(element, "accessibilityValue"),
-            frame: (turn ?? (rootTurn ? active : nil)).map { $0.shown(frame) } ?? frame,
+            frame: (turn ?? (rootTurn ? active : nil)).map { $0.shown(frame) } ?? active?.presentingGuestFrame(frame) ?? frame,
             depth: depth,
             screen: screen))
         found.append(element)

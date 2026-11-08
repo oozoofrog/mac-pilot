@@ -286,8 +286,9 @@ let tools: [[String: Any]] = [
             the simulator's keyboard is Korean; it refuses text that the current keyboard cannot type. \
             paste puts any text on the pasteboard and uses the native three-finger editing menu when available, otherwise cmd+V; if iOS asks to allow the paste, \
             take a screenshot and tap the Allow Paste button (mac-cu puts the user's Mac pasteboard back after it). \
-            hinge folds a foldable device (iPhone Duo) to degrees or a state and reads the angle back (with neither, it \
-            only reads); rotate turns the device. Both answer with the screen that is then on. views gives the \
+            hinge folds a foldable device (iPhone Duo) continuously to degrees or a state (with neither, it only reads). \
+            rotate delivers an orientation request. Setters return after safe local delivery/motion, with structured \
+            confirmationPending when guest state is not yet observed. Read hinge or screenshot/describe to verify actual state. views gives the \
             app's UIView hierarchy with frames, hidden, alpha and Auto Layout constraints, as Xcode's view debugger \
             reads it (lldb attaches and stops the app for about 20 seconds; query narrows it to views whose class, id or label contains it). \
             gesture replays frames of up to three independent fingers as real touchscreen HID reports: each frame has time and touches (id, phase down/move/up, x, y). Use it for multi-tap, long-press drag, pinch, rotation and compound gestures. \

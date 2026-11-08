@@ -27,14 +27,18 @@ Installing the Plugin alone does not register mac-cu MCP. Follow [installation a
 
 | Package | Version | Scope |
 | --- | --- | --- |
-| [Mac Computer Use](mac-computer-use/skills/mac-computer-use/SKILL.md) | 1.27.0 | Mac apps, browsers, web views and native simulator screen controls |
-| [Simulator Pilot](simulator-pilot/skills/simulator-pilot/SKILL.md) | 1.8.1 | Simulator app launch, logs, test data and change verification |
+| [Mac Computer Use](mac-computer-use/skills/mac-computer-use/SKILL.md) | 1.29.3 | Mac apps, browsers, web views and native simulator screen controls |
+| [Simulator Pilot](simulator-pilot/skills/simulator-pilot/SKILL.md) | 1.8.2 | Simulator app launch, logs, test data and change verification |
 
-`mac-computer-use`: Operate Mac apps, browser pages and iOS web views with the mac-cu MCP server. Use for desktop UI tasks without a better API or CLI, web view inspection, or mac-cu setup and modes. Route iOS Simulator app launch, logs, test data and change verification through simulator-pilot.
+`mac-computer-use`: Operate Mac apps, browser pages and iOS web views with the mac-cu MCP server. Use for desktop UI tasks without a better API or CLI, web view inspection, or mac-cu setup, modes and simulator preparation. Route iOS Simulator app launch, logs, test data and change verification through simulator-pilot.
 
 `simulator-pilot`: Use for iOS Simulator app launch, logs, screen interaction, test data and change verification. Use mac-computer-use for screen controls; follow the project build instructions for compilation. Excludes Mac desktop/browser/web view tasks and account signup.
 
-The native simulator LCD has an opaque screen, draggable device handle, detachable sidebar modules and focus mode. [Device controls](mac-computer-use/skills/mac-computer-use/references/device-window.md) keep guest input separate from window movement. OpenAI Decisions judgments use a Keychain-backed API key. Menu-bar Settings shows the actual synthetic connection-check request, validated response, elapsed time and failures without exposing credentials.
+The native simulator LCD has an opaque screen, draggable device handle, right and bottom Liquid Glass toolbars and focus mode. [Device controls](mac-computer-use/skills/mac-computer-use/references/device-window.md) keep guest input separate from window movement. OpenAI Decisions judgments use a Keychain-backed API key. Menu-bar Settings shows the actual synthetic connection-check request, validated response, elapsed time and failures without exposing credentials.
+
+Use **시뮬레이터 관리…** in the mac-cu menu bar or app menu to prepare runtimes, create compatible devices and start a selected device in the LCD. See [simulator preparation](mac-computer-use/skills/mac-computer-use/references/simulator-preparation.md). Downloads and local DMG imports require an explicit selection in that screen; app builds, installation, launch and logs remain Simulator Pilot workflows.
+
+The manager separates devices, creation and runtimes into task tabs, puts actual state and controls beside the selected device, and preserves creation drafts and readback recovery after failures. The [interactive interface design](docs/design/simulator-manager.html) uses example data and performs no device operations.
 
 ## Development and release
 

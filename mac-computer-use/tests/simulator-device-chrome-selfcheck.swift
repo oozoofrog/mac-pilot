@@ -4,6 +4,7 @@ import AppKit
 struct SimulatorDeviceChromeSelfcheck {
     static func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
     static func main() {
+        admitNativeSelfcheck()
         _ = NSApplication.shared
         let chrome = SimulatorDeviceChrome()
         let tools = SimulatorToolboxView(deviceName: "Fixture", isWatch: false)
@@ -44,43 +45,71 @@ struct SimulatorDeviceChromeSelfcheck {
 
         var requests: [[String: Any]] = []
         chrome.onRun = { requests.append($0) }
-        chrome.updateDevice(name: "Fixture", runtime: "iOS 27.2", connected: true, foldable: false, isWatch: false, rotation: "rot0")
-        assert(chrome.grip.label.stringValue.contains("연결됨") && chrome.grip.label.stringValue.contains("iOS 27.2"))
+        chrome.updateDevice(name: "Fixture",runtime: "iOS 27.2",connected: true,foldable: false,isWatch: false,rotation: "rot0")
         let buttons = descendants(chrome.controls).compactMap { $0 as? NSButton }
         let fold = buttons.first { $0.title == "접기" }!
-        assert(fold.isHidden)
-        chrome.updateDevice(name: "Fixture", runtime: "iOS 27.2", connected: false, foldable: true, isWatch: false, rotation: "rot0")
+        assert(fold.isHidden && buttons.count == 7)
+        chrome.updateDevice(name: "Fixture",runtime: "iOS 27.2",connected: true,foldable: true,isWatch: false,rotation: "rot0")
         chrome.updateAngle(130)
-        assert(!fold.isHidden && fold.title.contains("130°") && chrome.grip.label.stringValue.contains("화면 대기"))
-        chrome.controls.frame = CGRect(x: 0, y: 0, width: 304, height: 60)
+        assert(!fold.isHidden && fold.accessibilityLabel()!.contains("130"))
+        chrome.controls.frame = CGRect(x: 0,y: 0,width: 84,height: 364)
         chrome.controls.layoutSubtreeIfNeeded()
-        for button in buttons {
-            assert(button.frame.width >= 56 && button.frame.height >= 40)
-            assert(button.toolTip != nil && button.accessibilityLabel() != nil)
+        chrome.rail.frame = CGRect(x: 0,y: 0,width: 304,height: 96)
+        for style in [NSScroller.Style.legacy,.overlay] {
+            for scroll in descendants(chrome.controls).compactMap({ $0 as? NSScrollView }) + descendants(chrome.rail).compactMap({ $0 as? NSScrollView }) { scroll.scrollerStyle = style }
+            chrome.controls.needsLayout = true; chrome.rail.needsLayout = true
+            chrome.controls.layoutSubtreeIfNeeded(); chrome.rail.layoutSubtreeIfNeeded()
+            for button in buttons { assert(button.frame.width >= 44 && button.frame.height >= 44) }
+            let bottom = descendants(chrome.rail).compactMap { $0 as? SimulatorToolbarButton }.filter { $0.title != "응답" }
+            for scroll in descendants(chrome.rail).compactMap({ $0 as? NSScrollView }) {
+                assert((scroll.documentView?.frame.height ?? 0) <= scroll.contentSize.height+0.5)
+            }
+            assert(bottom.allSatisfy { $0.frame.height >= 44 && $0.frame.width >= 44 })
         }
+        for button in buttons { assert(button.frame.width >= 44 && button.frame.height >= 44 && button.accessibilityLabel() != nil) }
+        chrome.controls.frame.size.height = 160
+        chrome.controls.needsLayout = true; chrome.controls.layoutSubtreeIfNeeded()
+        let column = descendants(chrome.controls).compactMap { $0 as? NSScrollView }.first!
+        assert((column.documentView?.frame.width ?? 0) <= column.contentSize.width+0.5)
+        assert(buttons.allSatisfy { $0.isHidden || $0.frame.width >= 44 })
+        chrome.controls.frame.size.height = 316
+        chrome.controls.needsLayout = true; chrome.controls.layoutSubtreeIfNeeded()
         let rotate = buttons.first { $0.title == "회전" }!
-        rotate.performClick(nil)
-        assert(requests.last?["orientation"] as? String == "landscape-left")
-        rotate.performClick(nil)
-        assert(requests.last?["orientation"] as? String == "landscape-left", "A click cannot pretend the device rotated")
-        chrome.updateDevice(name: "Fixture", runtime: "iOS 27.2", connected: true, foldable: true, isWatch: false,
-                            rotation: "rot90", primaryDisplay: false)
-        rotate.performClick(nil)
-        assert(requests.last?["orientation"] as? String == "landscape-left", "Duo inner display uses the orientation picker axes")
-        chrome.updateDevice(name: "Fixture", runtime: "iOS 27.2", connected: true, foldable: true, isWatch: false, rotation: "rot0", primaryDisplay: false)
-        rotate.performClick(nil)
-        assert(requests.last?["orientation"] as? String == "portrait", "The next request follows actual inner-display readback")
-        chrome.setBusy(true)
-        let count = requests.count
-        rotate.performClick(nil)
-        assert(requests.count == count)
-        chrome.showFeedback("저장 실패", failed: true)
-        let feedback = descendants(chrome.controls).compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel() == "시뮬레이터 조작 결과" }!
-        assert(feedback.stringValue == "저장 실패" && feedback.textColor == .systemRed)
+        for rotation in ["rot0","rot90","rot180","rot270"] {
+            chrome.updateDevice(name: "Fixture",runtime: "iOS 27.2",connected: true,foldable: false,isWatch: false,rotation: rotation)
+            chrome.rotationFailed()
+            rotate.performClick(nil)
+            assert(requests.last?["direction"] as? String == "clockwise" && requests.last?["orientation"] == nil)
+            let count = requests.count; rotate.performClick(nil); assert(requests.count == count)
+        }
+        chrome.rotationFailed()
+        chrome.updateDevice(name: "Fixture",runtime: "iOS 27.2",connected: true,foldable: true,isWatch: false,rotation: "rot90",primaryDisplay: false)
+        rotate.performClick(nil); assert(requests.last?["direction"] as? String == "clockwise")
+        chrome.commandFinished(action: "rotate",failed: true)
+        let count = requests.count; rotate.performClick(nil); assert(requests.count == count+1)
+        chrome.finishRotationFeedback(["structuredContent": ["rotation": ["requestedOrientation":"landscape-right", "screenConfirmed":false, "screenOrientation":"rot0", "assumedPortrait":true]]])
+        let rotationFeedback = descendants(chrome.rail).compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel() == "시뮬레이터 조작 결과" }!
+        assert(rotate.isEnabled && rotationFeedback.stringValue.contains("세로 기준 첫 요청") && !rotationFeedback.stringValue.contains("실패"))
+        chrome.finishRotationFeedback(["structuredContent": ["rotation": ["requestedOrientation":"portrait", "screenConfirmed":true]]])
+        assert(rotationFeedback.stringValue.contains("화면 회전 확인"))
+        chrome.rotationFailed(); chrome.setBusy(true)
+        let busyCount = requests.count; rotate.performClick(nil); assert(requests.count == busyCount)
         chrome.setBusy(false)
         let capture = buttons.first { $0.title == "캡처" }!
-        capture.performClick(nil)
-        assert(requests.last?["action"] as? String == "screenshot")
+        capture.performClick(nil); assert(requests.last?["action"] as? String == "screenshot")
+        chrome.showFeedback("저장 실패",failed: true)
+        let feedback = descendants(chrome.rail).compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel() == "시뮬레이터 조작 결과" }!
+        assert(feedback.stringValue.contains("저장 실패") && feedback.textColor == .systemRed)
+        chrome.updateRecording(true,caption: "정지 0:03")
+        assert(buttons.contains { $0.title == "정지 0:03" })
+        chrome.updateDevice(name: "Fixture",runtime: "iOS 27.2",connected: false,foldable: true,isWatch: false,rotation: "rot0")
+        let offline = requests.count; capture.performClick(nil); assert(requests.count == offline)
+        assert(!chrome.angle.isEnabled)
+        chrome.updateDevice(name: "Fixture",runtime: "iOS 27.2",connected: true,foldable: true,isWatch: false,rotation: "rot0")
+        chrome.updateAngle(90); chrome.angle.doubleValue = 89; chrome.angle.onCommit?(89)
+        assert(requests.last?["degrees"] as? Double == 89)
+        chrome.commandFinished(action: "hinge",failed: true); chrome.updateAngle(90)
+        assert(chrome.angle.doubleValue == 89,"Failed draft must survive external confirmed readback")
         let first = Data([1, 2]), active = Data([3, 4])
         assert(simulatorActiveCaptureData([["type": "image", "data": first.base64EncodedString()],
                                            ["type": "text", "text": "Screen 1 LCD (on: its pixels are coordinates)"],

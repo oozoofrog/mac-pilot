@@ -1,6 +1,6 @@
 ---
 name: mac-computer-use
-description: Operate Mac apps, browser pages and iOS web views with the mac-cu MCP server. Use for desktop UI tasks without a better API or CLI, web view inspection, or mac-cu setup and modes. Route iOS Simulator app launch, logs, test data and change verification through simulator-pilot.
+description: Operate Mac apps, browser pages and iOS web views with the mac-cu MCP server. Use for desktop UI tasks without a better API or CLI, web view inspection, or mac-cu setup, modes and simulator preparation. Route iOS Simulator app launch, logs, test data and change verification through simulator-pilot.
 ---
 
 # Mac Computer Use for Claude Code and Codex
@@ -40,7 +40,7 @@ description: Operate Mac apps, browser pages and iOS web views with the mac-cu M
 
   mac-cu runs as a menu bar app (one for all sessions): the first call starts it, and it stays until
   the user quits it in the menu. The menu shows the version, each session and what it does now, the
-  permissions, the modes, and shows manual update guidance. While a simulator LCD window is open, mac-cu also appears in the Dock with its bundled app icon; clicking its Dock icon restores the most recently used LCD window. The borderless LCD has an opaque device body, a drag capsule with a device menu, and separate controls; see [device window controls](references/device-window.md). Closing the last LCD window returns mac-cu to menu-bar-only operation. After a plugin update, the next call quits
+  permissions, the modes, and shows manual update guidance. While a simulator LCD window is open, mac-cu also appears in the Dock with its bundled app icon; clicking its Dock icon restores the most recently used LCD window. The borderless LCD has an opaque device body, a drag capsule with a device menu, and right/bottom control toolbars; see [device window controls](references/device-window.md). Closing the last LCD window returns mac-cu to menu-bar-only operation. After a plugin update, the next call quits
   the old app and starts the new one by itself.
 
 **Permissions.** mac-cu.app itself (not the app that runs the agent) needs Accessibility for apps and
@@ -56,6 +56,8 @@ python3 "<SKILL_DIR>/scripts/setup.py" --permissions
 The menu bar menu shows both permissions too, and opens the guide for a missing one. After Screen
 Recording is on, macOS can ask to quit and reopen mac-cu: the user quits it in the menu bar, and the
 next call starts it again.
+
+**Simulator preparation.** Menu bar or app menu **시뮬레이터 관리…** lists all devices, creates compatible devices, downloads/imports runtimes and starts a selected device in the native LCD. Read [simulator preparation](references/simulator-preparation.md) for confirmations, claim guards and cancellation. App builds, installation, launch and logs continue through Simulator Pilot.
 
 ## 2. Approval
 

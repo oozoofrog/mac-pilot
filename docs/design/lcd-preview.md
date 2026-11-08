@@ -1,0 +1,21 @@
+# LCD design preview
+
+Use this separate native mock to iterate on LCD and toolbar UI before integrating a design change. Then validate the production application separately using the relevant guarded checks; this fixture cannot establish device behavior or production performance. It compiles the actual LCD layout, toolbar, popovers, materials and hinge slider with a synthetic display and a deterministic mock adapter. It does not compile the production entry, simulator backend, daemon, device or permission helpers. Two clipboard-reading expressions in the reused UI are replaced in generated copies; the build fails closed if those routes change. The preview has its own bundle identity and preferences domain.
+
+From the repository root, on an unlocked and awake desktop, with no other native check or installation using the foreground:
+
+```sh
+python3 mac-computer-use/tests/lcd-preview/preview.py --seconds 900
+```
+
+The command builds a fresh app in a unique system temporary directory, proves rejected helper, inherited, unknown and missing entry routes before AppKit, then holds a singleton lock and a parent watchdog for the entire session. The watchdog admits one exact executable, enforces the finite 30–3600 second lifetime, and cleans owned processes on expiry, failure or interruption. Close either window to end early. Run the command again for another session; do not open the generated app directly. `--build-only` builds and checks dispatch without opening a window. Generated apps and evidence stay outside the repository and release archives.
+
+Use the small scenario window for phone/Duo cover/Duo inner, light/dark/opaque material fallback, narrow/wide, and success/pending/failure/offline. Rotate fixture and fold set confirmed mock state; toolbar actions show requests first and deterministic completion or failure later. The integrated fold popover retains exact 0/90/180 targets and fine angles. The synthetic display changes aspect ratio for rotation; it is not a device framebuffer or a model-accurate rendering. Opaque fallback tests the component's actual glass switch; contrast and motion follow system accessibility settings and are not separately overridden. The mock does not send guest input, capture screen content, use clipboard data, connect to devices or services, request permissions, or use profiles/Keychain. Recording, capture, input and location are simulated; no device settings or capture files are changed. Explicit design-feedback saves append only to the separate preview feedback file described below.
+
+For a focused pass, compare phone and Duo at regular and narrow sizes, open Fold and Input with keyboard focus, try 89° and exact ticks, switch outcome to Failure and retry, then compare light/dark/opaque. Stop input if focus is lost. Inspect actual controls and their clipping, feedback and focus; do not infer physical pointer or VoiceOver acceptance from programmatic events. Keep screenshots outside Git and capture only the synthetic window. If duplicate app instances/windows or relaunch appear, stop immediately and follow [native check safety](../native-check-safety.md) before any retry.
+
+## Design feedback
+
+Right-click a point in a preview window or one of its tool popovers to open an editable feedback popover. Write the improvement and choose **의견 저장**. The local-only record links the text to the actual frontmost AppKit hit view and its ancestor chain, accessibility labels/identifiers where available, window-local point, view-local point, frames and current mock scenario. It does not save screenshots, text-field contents, clipboard data or input from other apps. A view can be an AppKit internal child; use its ancestor chain to identify the production component. Menus owned by the system and the frame outside the preview windows are not covered.
+
+Records are appended to `~/Library/Application Support/LCD Design Preview/feedback.jsonl`, outside Git and package archives. They remain available after the bounded preview exits. Ask the coding agent in this conversation to read the preview feedback and implement it; saving does not itself send a message or change production code. This path is separate from production profiles and captures; remove individual notes only when desired.

@@ -227,6 +227,20 @@ let modeLabels = ["auto": "auto · 뒤에서 조작하고, 안 될 때만 앞으
                   "foreground": "foreground · 매번 앞으로 가져와 조작",
                   "glow": "glow · 빛과 포인터", "steps": "steps · 빛·포인터와 목표·단계", "off": "off · 표시 없음"]
 
+extension SimulatorPreparationWindow {
+    static let shared = SimulatorPreparationWindow(
+        backendFactory: { SimulatorPreparationBackend(task: $0, claims: { simulatorClaims().mapValues { $0.0 } }) },
+        claims: { simulatorClaims().mapValues { $0.0 } },
+        openLCD: { id, task in
+            try handleQueue.sync {
+                try task.checkCancellation()
+                guard simulatorClaims()[id] == nil else { throw SimulatorPreparationError("다른 세션이 사용 중입니다. 해당 세션에서 확인한 뒤 LCD를 여세요.") }
+                let device = try bootedDevice(id)
+                return try simulatorWindowAction(device, active: activeScreen(of: device), close: false)
+            }
+        })
+}
+
 final class MenuBar: NSObject, NSMenuDelegate, NSApplicationDelegate, NSMenuItemValidation {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let menu = NSMenu()
@@ -247,6 +261,9 @@ final class MenuBar: NSObject, NSMenuDelegate, NSApplicationDelegate, NSMenuItem
         let settings = NSMenuItem(title: "설정…", action: #selector(showDecisionSettings), keyEquivalent: ",")
         settings.target = self
         application.addItem(settings)
+        let preparation = NSMenuItem(title: "시뮬레이터 관리…", action: #selector(manageSimulators), keyEquivalent: "")
+        preparation.target = self
+        application.addItem(preparation)
         application.addItem(.separator())
         let quit = NSMenuItem(title: "mac-cu 종료", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
@@ -273,6 +290,7 @@ final class MenuBar: NSObject, NSMenuDelegate, NSApplicationDelegate, NSMenuItem
         NSApp.mainMenu = main
         SimulatorStatusBoard.shared.onChange = { [weak self] in
             SimulatorStatusWindow.shared.redraw()
+            SimulatorPreparationWindow.shared.boardChanged()
             self?.refreshWindowStatus()
         }
         SimulatorStatusBoard.shared.start()
@@ -345,6 +363,9 @@ final class MenuBar: NSObject, NSMenuDelegate, NSApplicationDelegate, NSMenuItem
         let simulators = SimulatorStatusBoard.shared.statuses
         menu.addItem(label(simulators.isEmpty ? "부팅된 시뮬레이터 없음" : "시뮬레이터 \(simulators.count)대"))
         for status in simulators { menu.addItem(label("  " + status.line)) }
+        let preparation = NSMenuItem(title: "시뮬레이터 관리…", action: #selector(manageSimulators), keyEquivalent: "")
+        preparation.target = self
+        menu.addItem(preparation)
         let window = NSMenuItem(title: "시뮬레이터 상태 창 열기…", action: #selector(showSimulators), keyEquivalent: "")
         window.target = self
         menu.addItem(window)
@@ -448,6 +469,7 @@ final class MenuBar: NSObject, NSMenuDelegate, NSApplicationDelegate, NSMenuItem
     }
 
     @objc func showSimulators() { SimulatorStatusWindow.shared.show() }
+    @objc func manageSimulators() { SimulatorPreparationWindow.shared.show() }
 
     @objc func showDecisionSettings() {
         // Menu actions have no requesting MCP session. Never reuse the last client's key.

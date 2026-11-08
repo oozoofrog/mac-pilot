@@ -9,6 +9,8 @@ bash scripts/check.sh
 
 The native check script runs Swift type checks, Decisions mock/UI checks and gesture checks. Foreground checks require an unlocked interactive Mac and run serially. The [device-window procedure](mac-cu-device-window-validation.md) covers isolated live checks. Never shutdown/reset a shared device or bypass protected-input failures.
 
+Follow [native check safety](native-check-safety.md) before launching test apps or previews. The shared native runners preserve the permission helper, prove rejected/inherited routes before opening the UI, and enforce parent deadlines and exact executable instance limits. A preview must keep its parent watchdog running; its default lifetime is 30 minutes.
+
 After reviewing and committing main:
 
 ```sh

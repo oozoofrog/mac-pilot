@@ -4,11 +4,14 @@ import Foundation
 func simulatorCommandNeedsActiveScreen(_ action: String) -> Bool { action != "button" && action != "crown" }
 
 /// Polls can overlap tool calls and the status board; each devicectl invocation owns its output.
-func displays(of id: String) -> [[String: Any]]? {
+func displays(of id: String, task: SimulatorPreparationTask? = nil) -> [[String: Any]]? {
     let file = FileManager.default.temporaryDirectory.appendingPathComponent("mac-cu-displays-\(id)-\(UUID().uuidString).json")
     defer { try? FileManager.default.removeItem(at: file) }
-    let result = shell("/usr/bin/xcrun", ["devicectl", "device", "info", "displays", "--device", id, "--quiet", "--json-output", file.path])
-    guard result.status == 0, let data = try? Data(contentsOf: file),
+    let arguments = ["devicectl", "device", "info", "displays", "--device", id, "--quiet", "--json-output", file.path]
+    let succeeded: Bool
+    if let task { succeeded = (try? task.run("/usr/bin/xcrun", arguments, timeout: 5, stream: false)) != nil }
+    else { succeeded = shell("/usr/bin/xcrun", arguments).status == 0 }
+    guard succeeded, let data = try? Data(contentsOf: file),
           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     else { return nil }
     return (json["result"] as? [String: Any])?["displays"] as? [[String: Any]]

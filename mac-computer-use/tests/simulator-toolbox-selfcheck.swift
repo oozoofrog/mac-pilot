@@ -249,6 +249,7 @@ struct SimulatorToolboxSelfcheck {
     }
 
     static func main() throws {
+        admitNativeSelfcheck()
         _ = NSApplication.shared
         checkGeometry()
         assert(simulatorToolboxViewRequest("WKWebView")["query"] as? String == "WKWebView")
@@ -414,7 +415,7 @@ struct SimulatorToolboxSelfcheck {
         content.needsLayout = true;content.layoutSubtreeIfNeeded()
         if #available(macOS 26, *) {
             let container = descendants(content).compactMap { $0 as? NSGlassEffectContainerView }.first!
-            assert(container.spacing == box.glassSpacing && container.spacing < 24 * 344 / 576)
+            assert(container.spacing == 0, "Stable toolbar surfaces must not merge with neighboring glass")
         }
         let watch = SimulatorToolboxView(deviceName: "Apple Watch", isWatch: true)
         let watchViews = descendants(watch)

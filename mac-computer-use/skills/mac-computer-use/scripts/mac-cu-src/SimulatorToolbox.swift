@@ -112,6 +112,7 @@ final class SimulatorToolboxView: NSView {
         let span: Int
     }
     private var components: [Component] = []
+    private var inspectionPresentation = false
     private let isWatch: Bool
     private let angle = NSSlider(value: 180, minValue: 0, maxValue: 180, target: nil, action: nil)
     private let angleLabel = NSTextField(labelWithString: "접기 각도")
@@ -253,6 +254,18 @@ final class SimulatorToolboxView: NSView {
         components.append(Component(glass: glass, control: control, row: row, column: column, columns: columns, span: span))
     }
 
+    /// Reuse the original inspection controls and drafts, with one window owner.
+    func useInspectionPresentation() {
+        inspectionPresentation = true
+        for item in components {
+            item.glass.usesGlass = false
+            if ["button.home","button.lock","button.siri","rotate","hinge","type","paste","key","screenshot"].contains(actionNames[item.control] ?? "") {
+                item.glass.isHidden = true
+            }
+        }
+        needsLayout = true
+    }
+
     func setFloatingPresentation(_ visible: Bool) {
         expanded = visible
         isHidden = !visible
@@ -268,7 +281,7 @@ final class SimulatorToolboxView: NSView {
 
     func updateScreen(_ size: CGSize, name: String, foldable: Bool, rotation: String = "rot0") {
         screenSize = size
-        angleGlass?.isHidden = !foldable
+        angleGlass?.isHidden = inspectionPresentation || !foldable
         for item in components { (item.control as? SimulatorGesturePad)?.screenSize = size }
         if let orientationControl, !orientationControl.isHighlighted {
             let selected = ["rot0": 0, "rot180": 3, "rot90": foldable ? 1 : 2, "rot270": foldable ? 2 : 1][rotation] ?? 0
@@ -283,7 +296,21 @@ final class SimulatorToolboxView: NSView {
     }
 
     private func frames() -> [CGRect] {
-        components.map { item in
+        if inspectionPresentation {
+            let fields = components.filter { !$0.glass.isHidden && $0.control is NSTextField }
+            let pads = components.filter { $0.control is SimulatorGesturePad }
+            return components.map { item in
+                let width = max(1,bounds.width-24)
+                if let index = fields.firstIndex(where: { $0.control === item.control }) {
+                    return CGRect(x: 12,y: bounds.height-54-CGFloat(index)*54,width: width,height: 40)
+                }
+                if let index = pads.firstIndex(where: { $0.control === item.control }) {
+                    return CGRect(x: 12+CGFloat(index)*(width/3),y: bounds.height-358,width: width/3-8,height: 64)
+                }
+                return CGRect(x: 12,y: bounds.height-422,width: width,height: 44)
+            }
+        }
+        return components.map { item in
             simulatorToolboxFrame(row: item.row, column: item.column, columns: item.columns, span: item.span,
                                   in: bounds.size, lcd: retractionLCD, expanded: expanded)
         }

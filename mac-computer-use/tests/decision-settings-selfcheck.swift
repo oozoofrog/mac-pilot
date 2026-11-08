@@ -114,6 +114,7 @@ struct DecisionSettingsSelfcheck {
         print("PASS decision settings: actual request body, decoded response, elapsed time, no credentials, HTTP/auth/timeout/refusal, cancellation, missing-key admission and compact scroll layout")
     }
     static func main() {
+        admitNativeSelfcheck()
         let app = NSApplication.shared; app.setActivationPolicy(.accessory)
         Task { @MainActor in await run(); exit(0) }
         app.run()
