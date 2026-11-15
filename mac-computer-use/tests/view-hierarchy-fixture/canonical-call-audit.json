@@ -1,0 +1,198 @@
+{
+  "status": "headless recording integration, isolated Python import and private request regressions passed; runtime qualification remains blocked",
+  "sources": {
+    "mac-computer-use/skills/mac-computer-use/scripts/view-capture/capture.py": {
+      "sha256": "26bb232200ceb1d92f0cb10d1ae1e0229c34a7574cfa9a31329a795d79ba2565",
+      "spawnSites": [
+        {
+          "function": "admit_debuggable_app",
+          "line": 188,
+          "call": "run(['/usr/bin/codesign', '-d', '--entitlements', '-', str(executable)],\n                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,\n                     timeout=3, check=False)"
+        },
+        {
+          "function": "tools_for_xcode",
+          "line": 224,
+          "call": "subprocess.check_output(['/usr/bin/xcode-select', '-p'], text=True, timeout=3)"
+        },
+        {
+          "function": "tools_for_xcode",
+          "line": 230,
+          "call": "subprocess.check_output(['/usr/bin/xcrun', '--sdk', 'iphonesimulator', '--show-sdk-path'],\n        env={**os.environ, 'DEVELOPER_DIR': str(developer)}, text=True, timeout=3)"
+        },
+        {
+          "function": "_supervise_debugger",
+          "line": 422,
+          "call": "popen([str(server_path), '--fd', str(right.fileno())], pass_fds=(right.fileno(),),\n                       env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)"
+        },
+        {
+          "function": "_supervise_debugger",
+          "line": 437,
+          "call": "popen([sys.executable, '-I', str(HERE / 'capture.py'), '--worker', str(folder), str(left.fileno())],\n                       pass_fds=(left.fileno(),), env=env, stdin=subprocess.DEVNULL,\n                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)"
+        }
+      ],
+      "review": "Capture transport unchanged. --prepare-recording is bound separately by the recording observer. The isolated CLI import was repaired and verified by invalid-schema direct and packaged CLI receipts; historical failure evidence remains retained. No native restart qualification is implied."
+    },
+    "mac-computer-use/skills/mac-computer-use/scripts/view-capture/resident_support.py": {
+      "sha256": "23fd18750bf18c42b016f432af7f0891fa768b068b2527e20bdd4409119426fa",
+      "spawnSites": [
+        {
+          "function": "run",
+          "line": 13,
+          "call": "subprocess.check_output(args, stderr=subprocess.PIPE, timeout=8)"
+        },
+        {
+          "function": "manifest",
+          "line": 27,
+          "call": "run(['/usr/bin/codesign', '--verify', '--strict', str(image)])"
+        },
+        {
+          "function": "admit",
+          "line": 33,
+          "call": "run(['/usr/bin/xcode-select', '-p'])"
+        },
+        {
+          "function": "admit",
+          "line": 35,
+          "call": "run(['/usr/bin/xcrun', '--sdk', 'iphonesimulator', '--show-sdk-path'])"
+        },
+        {
+          "function": "admit",
+          "line": 38,
+          "call": "run(['/usr/bin/xcodebuild', '-version'])"
+        },
+        {
+          "function": "admit",
+          "line": 44,
+          "call": "run(['/usr/bin/xcrun', 'simctl', 'list', 'devices', '--json'])"
+        },
+        {
+          "function": "admit",
+          "line": 50,
+          "call": "run(['/usr/bin/xcrun', 'simctl', 'list', 'runtimes', '--json'])"
+        },
+        {
+          "function": "admit",
+          "line": 60,
+          "call": "run(['/usr/bin/xcrun', 'simctl', 'get_app_container', request['target']['deviceID'], bundle, 'app'])"
+        },
+        {
+          "function": "admit",
+          "line": 63,
+          "call": "run(['/usr/bin/codesign', '--verify', '--strict', str(app)])"
+        },
+        {
+          "function": "admit",
+          "line": 64,
+          "call": "run(['/usr/bin/codesign', '-d', '--xml', '--entitlements', '-', str(executable)])"
+        },
+        {
+          "function": "admit",
+          "line": 67,
+          "call": "run(['/usr/bin/xcrun', 'simctl', 'get_app_container', request['target']['deviceID'], bundle, 'data'])"
+        },
+        {
+          "function": "stage",
+          "line": 95,
+          "call": "run(['/usr/bin/codesign', '--verify', '--strict', str(image)])"
+        }
+      ]
+    },
+    "mac-computer-use/skills/mac-computer-use/scripts/view-capture/resident_transport.py": {
+      "sha256": "84034c91faa12cf6fb83d58695e36262f96551e08a2bb2b39ea1f8f38f6eff88",
+      "spawnSites": [
+        {
+          "function": "supervise",
+          "line": 273,
+          "call": "subprocess.Popen([str(server_path), '--fd', str(right.fileno())], pass_fds=(right.fileno(),),\n            env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)"
+        },
+        {
+          "function": "supervise",
+          "line": 286,
+          "call": "subprocess.Popen([sys.executable, '-I', str(HERE / 'resident_transport.py'), '--worker', str(channel), str(left.fileno())],\n                pass_fds=(left.fileno(),), env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)"
+        }
+      ]
+    },
+    "mac-computer-use/skills/mac-computer-use/scripts/view-capture/resident_protocol.py": {
+      "sha256": "e898280b1b5a852d8a7f363456a827b2a8dfa896aeae22146d328cb303893120",
+      "spawnSites": []
+    },
+    "mac-computer-use/skills/mac-computer-use/scripts/mac-cu-src/SimulatorViews.swift": {
+      "sha256": "995a6d136645af9a3ff237e91d3388fffcd6145eabf5fd901c15cdda1d77932a",
+      "review": "Reviewed actual serializer now creates its request with explicit 0600 using the existing editable-request pattern; no argv, helper environment, dispatch, queue or budget changes. The console serializer asserts actual file permissions under umask 022 without post-write repair."
+    },
+    "mac-computer-use/skills/mac-computer-use/scripts/mac-cu-src/SimulatorDisplayState.swift": {
+      "sha256": "610d4904c05ca90eb53d9913a40b6342e8b48b384d56a464e38ca9f50a09d2d2"
+    },
+    "mac-computer-use/skills/mac-computer-use/scripts/mac-cu-src/SimulatorTargetIdentity.swift": {
+      "sha256": "bd2a3c23b4229407eda33dbc90dbca37223c56902841409768e6860fb0e5efa1"
+    },
+    "mac-computer-use/skills/mac-computer-use/scripts/mac-cu-src/Simulator.swift": {
+      "sha256": "f5168b05fd5f03177c621bc0a73a86d87be48a3d73b850ccf736319e827700e3"
+    },
+    "mac-computer-use/tests/simulator-inspector-product-live/live.swift": {
+      "sha256": "639f70e43448281521d3f9e1ede8c5914bceb9d3ea0235fc733b20c3ba123b6c",
+      "review": "Reviewed actual visible/enabled NSButton.performClick recording action after arm/owner ACK; no automatic recording. Two scope reads are serial on handleQueue. Existing display limit2/family6, utility1/family5 and UI/probe singleton unchanged. Mutable PID/ledger switch only after owner publication; histories remain separate. Both bridge files now use the bounded verbatim-regression-tested private publisher: explicit 0600 before exclusive atomic rename, no destination replacement, nofollow directory/inode checks. Other save callers retain their existing rewrite behavior; no dispatch or process budgets changed."
+    },
+    "mac-computer-use/skills/mac-computer-use/scripts/view-capture/edit_backend.py": {
+      "sha256": "a4ac2e648af40b460e5f103b3108dd4e66de82a800f8d21e56f579e531de09d5",
+      "spawnSites": [],
+      "review": "bind_wire writes one final digest through existing atomic ledger save; optional digest validation preserves legacy completed ledgers. No subprocess is added."
+    },
+    "mac-computer-use/skills/mac-computer-use/scripts/view-capture/recording_preparation.py": {
+      "sha256": "2498de6f2bb86be25d3a541426fc4219215cca35ad39e929c1a16e533bf81e9a",
+      "spawnSites": [
+        {
+          "function": "run",
+          "line": 289,
+          "call": "execute(['/usr/bin/xcrun', 'simctl', 'launch', target['deviceID'], bundle],\n                env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, check=False)"
+        },
+        {
+          "function": "run",
+          "line": 297,
+          "call": "execute(['/usr/bin/xcrun', 'simctl', 'spawn', target['deviceID'], 'launchctl', 'list'],\n                env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, check=False)"
+        }
+      ],
+      "review": "Reviewed current strict five-field scope, claimant ancestor rechecks, actual release ledger, one marker-fenced SIGTERM, one argv-free env287 launch (15s), optional read-only reconciliation (5s); no transport worker. Parent observer independently requires native exited gap, settled launch and successor/container/boot proof. No dispatch retry."
+    },
+    "mac-computer-use/tests/view-hierarchy-fixture/recording_session.py": {
+      "sha256": "0bf5f57072022c9ff476a692ccc15b0752cfcdbec35632d43bbdb0ba0a1f4840",
+      "review": "One immutable host arm ID/deadline; bounded owned atomic controls, exact guest bytes, before-dispatch-only cancel; no process spawn/signal/claim writes."
+    },
+    "mac-computer-use/tests/view-hierarchy-fixture/recording_owner.py": {
+      "sha256": "2cbd3c23977373ecb19485ea071f67407e3b3e65fc163da9b31bad39a412005a",
+      "review": "Worker arm/ACK and parent native custody bridge. Owner retains exact helper/UI/launch PID starts; candidate is never capture authority. Cleanup revalidates both histories, native absence, installed/boot/claim pins; no process dispatch/reparent exception. Cleanup brackets the final native status read and complete inventory/target recheck under one unchanged three-second cutoff (retained RED/GREEN regression)."
+    },
+    "mac-computer-use/tests/view-hierarchy-fixture/session.py": {
+      "sha256": "d51f5aac10e4ee2c168bd58394ea4f58c4f526217ad2a1dc1dd6705048632552",
+      "review": "Reviewed parent observation and worker finally deltas: explicit lane only, persistent owner cursor and current cleanup target; exact original/successor histories and pending/spent archive. Existing install/initial launch/final stop/uninstall sites unchanged and not executed in headless tests."
+    },
+    "mac-computer-use/tests/view-hierarchy-prototype/ui_recording_contract.py": {
+      "sha256": "99febb0a041e54dd30cc2dd48e7e5488d5b07f242aac2d1582c4457a8f26c369",
+      "review": "Actual pinned production schema/Ledger readers, full request/wire/receipt ownership joins, intent phases, exact launch/reconcile commands and one owner revision. No process dispatch. Legacy Transition predicate is not an admission path. Native qualification stages a candidate; commit is one-shot and only after complete observer acceptance. Failed publication retains current candidate custody and forbids re-publication."
+    },
+    "mac-computer-use/tests/view-hierarchy-prototype/ui_process_contract.py": {
+      "sha256": "ad7ae7a51cf6197be1cfd485212b9ee1796cef927e3ae1127d0c97a14544a056",
+      "review": "Preparation variant shares supervisor and utility slots; exact parent/group/native start and prepared artifact joins. Read-only identity may inspect an independently native-qualified candidate; capture remains gated on owner admission. No capture parser broadening."
+    },
+    "mac-computer-use/tests/view-hierarchy-prototype/ui_tool_contract.py": {
+      "sha256": "9b7713e7da7fea7df4f8aa1283f7d902c4bfd4c921fbae77bd7c5fab517a7e6f",
+      "review": "Only the reviewed live.swift bridge-publication digest changed. Exact command parser, wrapper hashes, role topology, family budgets and private readers remain unchanged."
+    },
+    "mac-computer-use/tests/view-hierarchy-prototype/remote_watchdog.py": {
+      "sha256": "6bed092e0908725b098a6bf3b420ecbfc8e0f588d32ad7f64a35ab2a07769701",
+      "review": "Recording owner integrated before final cleanup resolution; persistent helper/UI/launch members cannot fall out on reparent. Existing three-second cutoff, full native re-reads and complete inventory retained. No dispatch added. Successor publication occurs after complete native/semantic/global family checks, target and exec-candidate checks, and final cutoff acceptance, never from early resolve_target."
+    },
+    "mac-computer-use/tests/simulator-inspector-product-live/runner.py": {
+      "sha256": "02c16db67a57721f1aea283cf26f14369bc62b4b30cfba3bd229da4d817ce3e4",
+      "review": "One optional worker protocol service in existing UI loop; no recording callback/action. Bounded before-dispatch cancellation receipt drain stays within original deadline. Separate evidence per lifetime and strict unresolved custody preservation."
+    },
+    "mac-computer-use/tests/simulator-inspector-product-live/evidence.py": {
+      "sha256": "9d5eafefd0f442b626a3eb0b8dbf5784041d57ef474204f7ddecea78650cd278",
+      "review": "Read-only per-lifetime full receipt joins and separate archival; no forcing successor into original ledger; no process/target calls."
+    },
+    "mac-computer-use/tests/swiftui-inspector-product-live/runner.py": {
+      "sha256": "5f89ed27700bb838c4c35b57cd29e8f2e6e20816052e8d7455028dc030fe08e9",
+      "review": "Explicit harness-only recording flag propagated to worker; initial recording lane omits env287. Default pre-recorded fixture launch unchanged. Production restart argv/env unchanged."
+    }
+  }
+}

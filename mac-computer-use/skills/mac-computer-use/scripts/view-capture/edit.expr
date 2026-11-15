@@ -1,0 +1,16 @@
+({
+#if __has_feature(objc_arc)
+#error MacCU_edit_expression_requires_MRC_for_explicit_local_lifetime
+#endif
+    BOOL wrote = NO;
+    @autoreleasepool {
+        NSData *input = (id)[(id)[[NSData alloc] initWithBase64EncodedString:@"__WIRE__" options:0] autorelease];
+        NSMutableDictionary *q = (id)[(id)[[NSJSONSerialization JSONObjectWithData:input options:NSJSONReadingMutableContainers error:NULL] mutableCopy] autorelease];
+        auto operationCancelled = []() -> BOOL { return NO; };
+        auto operationEntering = []() {};
+__OPERATION__
+        NSData *answer = [NSJSONSerialization dataWithJSONObject:out options:0 error:NULL];
+        wrote = answer && (NSUInteger)[answer length] <= 16777216 && [answer writeToFile:@__ANSWER_PATH__ atomically:YES];
+    }
+    wrote;
+})

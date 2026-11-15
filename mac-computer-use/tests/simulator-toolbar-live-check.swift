@@ -83,6 +83,10 @@ private struct ToolbarLiveFailure: Error { let message: String }
     try focused(); bottom.first { $0.title == "검사⌄" }!.performClick(nil); await toolbarLivePause(0.6)
     try toolbarRequire(open.toolbarDocking?.toolbar.isVisible == true && !open.content.chrome.hasOpenPopover, "Inspection opens existing workspace directly")
     let tools = open.toolbox
+    for _ in 0..<400 { await toolbarLivePause(0.025); if !tools.busy && !tools.manualPending { break } }
+    try toolbarRequire(descendants(tools).contains { $0 is SimulatorElementBrowser && !$0.isHiddenOrHasHiddenAncestor }, "Inspection starts with a zero-input element browser")
+    let advanced = descendants(tools).compactMap { $0 as? NSButton }.first { $0.title == "전문 도구…" }!
+    advanced.performClick(nil)
     let fields = descendants(tools).compactMap { $0 as? NSTextField }.filter { $0.isEditable && !$0.isHiddenOrHasHiddenAncestor }
     try toolbarRequire(fields.count == 5, "Production inspection retains all five labeled fields")
     try toolbarRequire(NSApp.isActive && tools.window!.isKeyWindow, "Foreground guard before guide capture")

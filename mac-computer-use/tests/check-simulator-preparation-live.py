@@ -7,6 +7,9 @@ import os
 from pathlib import Path
 import plistlib
 import subprocess
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills/mac-computer-use/scripts"))
+from native_build import run_swift, native_inputs
 import tempfile
 from native_check_support import check_routes, isolated_main, run_owned
 
@@ -34,7 +37,7 @@ def main():
             'CFBundlePackageType': 'APPL', 'NSHighResolutionCapable': True}
     (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
     sources = sorted(source.glob('*.swift'))
-    (output / 'source-hashes.json').write_text(json.dumps({p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sources}, indent=2))
+    (output / 'source-hashes.json').write_text(json.dumps({p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in [*sources, *native_inputs(source), Path(__file__), here / "native_check_support.py"]}, indent=2))
     with tempfile.TemporaryDirectory(prefix='mac-cu-preparation-build-') as build:
         entry = Path(build) / 'main.swift'
         text = (source / 'main.swift').read_text()
@@ -42,7 +45,7 @@ def main():
         command = ['swiftc', '-g', *[str(p) for p in sources if p.name != 'main.swift'],
                    str(entry), str(here / 'simulator-preparation-live-check.swift'), '-o', str(executable)]
         with (output / 'build.log').open('w') as log:
-            subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
+            run_swift(command, stdout=log, stderr=subprocess.STDOUT, check=True)
     subprocess.run(['codesign', '--force', '--sign', '-', str(app)], check=True)
     subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
     environment = dict(os.environ, PREPARATION_CHECK_OUTPUT=str(output))

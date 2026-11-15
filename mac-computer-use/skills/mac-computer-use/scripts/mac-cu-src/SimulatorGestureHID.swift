@@ -45,6 +45,9 @@ final class GestureHIDLink {
     private let deviceID: String
     private let connection: xpc_connection_t
     private let queue = DispatchQueue(label: "mac-cu.gesture-hid")
+    private let externalSend: ((xpc_object_t, xpc_object_t) -> Void)?
+    private let externalReply: ((xpc_object_t, xpc_object_t, String) throws -> xpc_object_t)?
+    private let simulatorConnectionOwned: Bool
     private let lock = NSLock()
     private var failure: String?
     private let size: CGSize
@@ -58,6 +61,9 @@ final class GestureHIDLink {
     init(device: NSObject) throws {
         deviceID = udid(of: device)
         size = screenSize(of: device)
+        externalSend = nil
+        externalReply = nil
+        simulatorConnectionOwned = true
         connection = try simulatorConnection(device, "com.apple.coredevice.feature.remote.universalhidservice")
         xpc_connection_set_target_queue(connection, queue)
         xpc_connection_set_event_handler(connection) { [weak self] event in
@@ -99,7 +105,27 @@ final class GestureHIDLink {
         }
     }
 
-    deinit { xpc_connection_cancel(connection) }
+    // External transports own activation and reply handling; this link never reconfigures them.
+    init(externalConnection connection: xpc_object_t, size: CGSize, deviceID: String,
+         services: [UInt64: String], mainService: UInt64? = nil,
+         send: @escaping (xpc_object_t, xpc_object_t) -> Void,
+         reply: @escaping (xpc_object_t, xpc_object_t, String) throws -> xpc_object_t) {
+        self.connection = connection
+        self.size = size
+        self.deviceID = deviceID
+        self.services = services
+        self.mainService = mainService
+        self.externalSend = send
+        self.externalReply = reply
+        self.simulatorConnectionOwned = false
+    }
+
+    deinit { if simulatorConnectionOwned { xpc_connection_cancel(connection) } }
+
+    private func transmit(_ message: xpc_object_t) {
+        if let externalSend { externalSend(connection, message) }
+        else { xpc_connection_send_message(connection, message) }
+    }
 
     func send(_ contacts: [GestureContact], screen: ActiveScreen?) throws {
         let service = try service(for: screen)
@@ -116,7 +142,7 @@ final class GestureHIDLink {
         let service = try lastService ?? self.service(for: screen)
         defer {
             active = []; lastService = nil; lastScreen = nil
-            showSimulatorTouches(deviceID, contacts: [], screen: screen)
+            if simulatorConnectionOwned { showSimulatorTouches(deviceID, contacts: [], screen: screen) }
         }
         var releaseError: Error?
         if !active.isEmpty {
@@ -128,10 +154,10 @@ final class GestureHIDLink {
         xpc_dictionary_set_uint64(reset, "_0", service)
         let payload = xpc_dictionary_create(nil, nil, 0)
         xpc_dictionary_set_value(payload, "resetGestureState", reset)
-        xpc_connection_send_message(connection, message(payload))
+        transmit(message(payload))
         try barrier()
         if let releaseError { throw releaseError }
-        if !warmed.contains(service) {
+        if simulatorConnectionOwned, !warmed.contains(service) {
             // dtuhidd queues early touches until backboardd opens the virtual touchscreen.
             try sendReport([GestureContact(id: 1, point: .zero, touching: false)], screen: screen, service: service)
             Thread.sleep(forTimeInterval: 1)  // Xcode 27.2 buffered the first contacts for about 0.75 s.
@@ -159,10 +185,10 @@ final class GestureHIDLink {
         xpc_dictionary_set_uint64(send, "_1", service)
         let payload = xpc_dictionary_create(nil, nil, 0)
         xpc_dictionary_set_value(payload, "send", send)
-        xpc_connection_send_message(connection, message(payload))
+        transmit(message(payload))
         try barrier()
         active = contacts.filter(\.touching)
-        showSimulatorTouches(deviceID, contacts: contacts, screen: screen)
+        if simulatorConnectionOwned { showSimulatorTouches(deviceID, contacts: contacts, screen: screen) }
     }
 
     private func message(_ payload: xpc_object_t? = nil, barrier: Bool = false) -> xpc_object_t {
@@ -179,6 +205,7 @@ final class GestureHIDLink {
     }
 
     private func reply(to message: xpc_object_t, operation: String) throws -> xpc_object_t {
+        if let externalReply { return try externalReply(connection, message, operation) }
         try checkFailure()
         let done = DispatchSemaphore(value: 0)
         var result: xpc_object_t?

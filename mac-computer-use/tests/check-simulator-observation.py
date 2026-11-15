@@ -3,6 +3,9 @@
 from pathlib import Path
 import os
 import subprocess
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills/mac-computer-use/scripts"))
+from native_build import run_swift, native_inputs
 import tempfile
 from native_check_support import isolated_main, check_routes, run_owned
 
@@ -14,7 +17,7 @@ with tempfile.TemporaryDirectory(prefix='mac-cu-observation-check-') as director
     entry.write_text(isolated_main((source / 'main.swift').read_text(), 'runSimulatorObservationBridgeCheck()'))
     executable = out / 'observation-check'
     with (out / 'build.log').open('w') as log:
-        compiled = subprocess.run(['swiftc', *[str(p) for p in sorted(source.glob('*.swift')) if p.name != 'main.swift'],
+        compiled = run_swift(['swiftc', *[str(p) for p in sorted(source.glob('*.swift')) if p.name != 'main.swift'],
                         str(entry), str(here / 'simulator-observation-bridge-selfcheck.swift'), '-o', str(executable)],
                        stdout=log, stderr=subprocess.STDOUT, timeout=180)
     if compiled.returncode:

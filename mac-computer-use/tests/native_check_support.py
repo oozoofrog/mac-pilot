@@ -13,6 +13,10 @@ CHILD_MARKER = 'MAC_CU_NATIVE_CHECK_CHILD'
 DISPATCH_MARKER = '// Chrome starts mac-cu as the native messaging host'
 
 
+class NativeCheckInterrupted(RuntimeError):
+    """Keep cancellation out of subprocess poll's internal OSError recovery."""
+
+
 def isolated_main(production: str, entry: str) -> str:
     if production.count(DISPATCH_MARKER) != 1:
         raise ValueError('Inspect changed production dispatch before generating a native test.')
@@ -31,7 +35,14 @@ if nativeCheckArguments != ["--check-screen-recording"] {
 
 def instances(executable: Path) -> list[int]:
     target = str(executable.resolve())
-    rows = subprocess.check_output(['ps', '-axo', 'pid=,comm='], text=True, timeout=3).splitlines()
+    # ps stalls for seconds now and then on a busy Mac (other builds, simulators). Read again twice, then fail closed.
+    for attempt in range(3):
+        try:
+            rows = subprocess.check_output(['ps', '-axo', 'pid=,comm='], text=True, timeout=3).splitlines()
+            break
+        except subprocess.TimeoutExpired:
+            if attempt == 2:
+                raise
     result = []
     for row in rows:
         parts = row.strip().split(None, 1)
@@ -81,7 +92,7 @@ def run_owned(executable: Path, arguments: list[str], *, environment: dict[str, 
                                stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     deadline = time.monotonic() + timeout
     def interrupted(signum, frame):
-        raise InterruptedError(f'Native check interrupted by signal {signum}.')
+        raise NativeCheckInterrupted(f'Native check interrupted by signal {signum}.')
     previous_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
         for sig in previous_handlers:

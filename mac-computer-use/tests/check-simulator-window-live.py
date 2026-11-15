@@ -11,6 +11,9 @@ import os
 from pathlib import Path
 import plistlib
 import subprocess
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills/mac-computer-use/scripts"))
+from native_build import run_swift, native_inputs
 import selectors
 import re
 import tempfile
@@ -80,7 +83,7 @@ def main():
         info['CFBundleName'] = 'Mac CU Device Preview'
     (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
     sources = sorted(source.glob('*.swift'))
-    (output / 'source-hashes.json').write_text(json.dumps({p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sources}, indent=2))
+    (output / 'source-hashes.json').write_text(json.dumps({p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in [*sources, *native_inputs(source), Path(__file__), here / "native_check_support.py"]}, indent=2))
     # Keep all production definitions; replace only executable dispatch in a temporary main.
     # The tested SimulatorWindow, input, backend and lifecycle classes are unmodified.
     with tempfile.TemporaryDirectory(prefix='mac-cu-lcd-build-') as build:
@@ -92,7 +95,7 @@ def main():
         command = ['swiftc', '-g', *[str(p) for p in sources if p.name != 'main.swift'],
                    str(entry), str(here / 'simulator-window-live-check.swift'), str(here / 'simulator-toolbar-live-check.swift'), str(here / 'simulator-duo-rotation-live-check.swift'), '-o', str(executable)]
         with (output / 'build.log').open('w') as log:
-            subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
+            run_swift(command, stdout=log, stderr=subprocess.STDOUT, check=True)
     subprocess.run(['codesign', '--force', '--sign', '-', str(app)], check=True)
     subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
     environment = dict(os.environ, LCD_CHECK_UDID=args.udid, LCD_CHECK_OUTPUT=str(output), LCD_CHECK_BACKEND_ONLY='1' if args.backend_only else '0')

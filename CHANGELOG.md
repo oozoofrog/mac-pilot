@@ -1,6 +1,27 @@
 # Changelog
 
-## Unreleased
+## 1.1.0 — 2026-11-15
+
+- 실기기 iPhone용 `device` 도구를 추가했다. `list`로 기기를 찾아 식별자로 한 대만 허용하고, 스크린샷과 탭·스와이프·키·텍스트 입력·버튼(홈·잠금·음량)을 CoreDevice HID로 보낸다. Mac의 커서·키보드·앞 앱은 바뀌지 않는다. 암호가 필요한 잠금 상태와 가로 방향에서는 입력을 거절하고, `type`은 한 번에 200자까지다. `view`는 Xcode Device Hub를 그 기기 페이지로 열며, 화면은 사용자가 View Screen을 눌러야 시작된다. mac-cu 자체의 실기기 화면 창은 없다. 결과의 "connection drained"는 기기가 처리했다는 보장이 아니므로 스크린샷으로 확인한다. `key`·`type`은 US 배열 키 코드를 보내므로 기기의 하드웨어 키보드 배열이 다르면 다른 글자가 들어간다. iPhone 14 Pro(iOS 27.2) USB 연결에서 홈·음량 버튼, 탭, 스와이프, 폴더 탭, 숫자 입력·삭제, 스크린샷, `view`와 Mac 비간섭을 확인했다. 연결 방식별 확인 상태는 [physical-device.md](mac-computer-use/skills/mac-computer-use/references/physical-device.md)에 있다.
+- 설치본을 서명할 Apple Development 인증서가 여러 개면 설치된 mac-cu와 같은 팀의 인증서를 먼저 고른다. 그런 인증서나 설치본이 없으면 환경 변수 `MAC_CU_SIGNING_TEAM`에 지정한 팀을, 그것도 맞지 않으면 이전처럼 처음 나온 인증서를 쓴다. 쓰지 않게 된 카메라 사용 설명(`NSCameraUsageDescription`)을 앱 정보에서 뺐다.
+
+- Fix SwiftUI recording preparation failing to load its sibling Python modules when the inspector launches the helper in isolated mode. Create its request with private permissions so the observer can validate it.
+
+- SwiftUI 기록 준비가 필요한 캡처에 명시적인 “SwiftUI 기록을 켜고 다시 실행” 버튼을 추가했다. 현재 실행 상태와 기존 실행 설정이 유지되지 않음을 표시하고, 검증된 검사 세션 해제와 새 앱 수명 확인을 거친다. 불확실한 실행 결과는 자동 재시도하지 않는다. 실제 제품 재실행 검증은 별도다.
+- SwiftUI 기록 재실행에서 helper의 실제 조상 프로세스가 소유한 기기 claim을 허용한다. 다른 프로세스의 claim과 변경된 소유권은 계속 거부하며, 종료·실행 직전에 다시 확인한다. 요청 형식과 대상 수명 검증을 추가했다. 이 변경의 현재 검증 범위는 headless 검사다.
+
+- 대상 앱의 identity 조회를 native 커널 읽기로 옮겨 Python 자식 실행을 제거했다. 기기 ID·수명·실행 경로·상태 검사를 유지하고, 조회 중 관찰한 실행 파일 변경을 거절한다. 캡처 백엔드의 독립 재검사는 유지한다.
+
+- Prepare mac-computer-use 1.31.0 for local delivery. Canonical host manifests and catalog metadata match; marketplace publication remains separate.
+
+- 이미 펼쳐진 LCD에는 Dock 복원을 요청하지 않는다. 비동기 복원 응답이 새 3D 검사 창의 키 포커스를 LCD로 되돌리는 경합을 수정했다.
+
+- LCD 검사에 명시적 AX 새로 읽기, 지원 동작·값 편집과 복원 결과를 추가했다. 확인된 runtime에서 press·증가·감소·서로 다른 custom action·문자열 적용/복원을 실제 guest 상태와 대조했다.
+- 별도 native 3D 검사 창에 트리·텍스처·수동 선택과 hidden/alpha 적용·복원을 연결했다. 상세 정렬, 최소 크기, 후보·선택 상태, 스크롤과 닫힘 정리를 수정했다. 실제 LCD→3D 캡처·편집·복원·재열기와 늦은 결과 거부를 검증했다. native 작업 도중의 강제 중단은 이 UI 검증의 범위가 아니다.
+- 일반 앱의 schema 2 캡처·편집을 resident helper로 옮겼다. LLDB는 고정 bootstrap 뒤 detach하며, UIKit 작업은 native main-queue callback에서 실행한다. 반복 캡처, 복원, release·새 owner 전환, stale 객체 거절, 예외·취소의 메모리 해제와 실행 권한 차단을 실제 Simulator에서 확인했다.
+- arm64 / Xcode 27B48 / iOS Simulator 24B114의 확인된 UIKit·표준 SwiftUI 진입을 지원한다. SwiftUI 내부 UIKit 뷰의 캡처·편집을 검증했으며, hosting texture에서 텍스트·도형이 빠질 수 있다는 제한을 검사 창에 표시한다. SwiftUI 값 타입 노드와 UIKit 뷰의 LCD 강조는 제공하지 않는다.
+
+- Replace the simulator inspector’s initial command forms with an explicitly refreshed accessibility element list, optional filtering, coordinate-linked selection, a read-only screen picker and explicit HID tap or supported AXPress actions. Revalidate the front app and selected geometry before touch; invalidate selection after input, screen changes and closing. Keep specialist tools and drafts behind an explicit entry. Prepare mac-computer-use 1.30.1 for local delivery only.
 
 - Recognize current simulator backlight readback so an active display is available to LCD and input workflows when `devicectl` omits the older active flag.
 

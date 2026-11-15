@@ -11,6 +11,7 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 script = Path(__file__).resolve().parents[1] / "skills/mac-computer-use/scripts/setup.py"
+sys.path.insert(0, str(script.parent))
 spec = importlib.util.spec_from_file_location("mac_cu_setup", script)
 setup = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(setup)

@@ -5,7 +5,8 @@ setup.py: connect mac-cu (scripts/mac-cu-src) to Claude Code and/or Codex.
 This script:
   1. builds ~/Library/Application Support/mac-cu/mac-cu.app (the menu bar daemon and the MCP stdio
      client, one program from scripts/mac-cu-src) with swiftc, signs it with your "Apple Development"
-     identity when you have one (ad-hoc otherwise), and builds scripts/focus-overlay (the focus glow);
+     identity when you have one (ad-hoc otherwise; with several, the installed app's team, else the team in
+     MAC_CU_SIGNING_TEAM), and builds scripts/focus-overlay (the focus glow);
   2. registers the app's program as a user-wide MCP server named "mac-cu" in each selected agent
      (`claude mcp`, `codex mcp`); the path does not change with the plugin version;
   3. copies the mac-cu Chrome extension (chrome-extension/) to ~/Library/Application Support/mac-cu and
@@ -33,10 +34,12 @@ import argparse
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from native_build import run_swift, build_view_capture_resources
 
 NAME = "mac-cu"
 LEGACY_NAME = "codex-cu"
@@ -52,6 +55,8 @@ SERVER = BUNDLE / "Contents" / "MacOS" / "mac-cu"
 LOCAL = HERE / "mac-cu"
 PLUGIN_MANIFEST = HERE.parents[2] / ".claude-plugin" / "plugin.json"
 ICON_SOURCE = HERE.parent / "assets" / "mac-cu-icon.png"
+# With several "Apple Development" identities and no installed app to follow: the team to sign with.
+SIGNING_TEAM_VARIABLE = "MAC_CU_SIGNING_TEAM"
 INFO_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -90,11 +95,57 @@ def build(sources: list, output: Path) -> bool:
     return True
 
 
-def signing_identity() -> str:
+def installed_team(bundle: Path = BUNDLE):
+    """The team of the installed app's signature, or None (no app, ad-hoc or unreadable)."""
+    if not bundle.exists():
+        return None
+    shown = subprocess.run(["codesign", "-dv", str(bundle)], capture_output=True, text=True)
+    for line in (shown.stderr or "").splitlines() + (shown.stdout or "").splitlines():
+        if line.startswith("TeamIdentifier="):
+            team = line.split("=", 1)[1].strip()
+            return None if team in ("", "not set") else team
+    return None
+
+
+def certificate_teams() -> dict:
+    """SHA-1 -> team (the certificate subject's OU) of each "Apple Development" certificate in the keychains."""
+    listed = subprocess.run(["security", "find-certificate", "-a", "-Z", "-p", "-c", "Apple Development"],
+                            capture_output=True, text=True).stdout or ""
+    teams, digest, pem = {}, None, []
+    for line in listed.splitlines():
+        if line.startswith("SHA-1 hash:"):
+            digest, pem = line.split(":", 1)[1].strip().upper(), []
+        elif line.startswith("-----BEGIN CERTIFICATE-----") or pem:
+            pem.append(line)
+            if line.startswith("-----END CERTIFICATE-----") and digest:
+                subject = subprocess.run(["/usr/bin/openssl", "x509", "-noout", "-subject", "-nameopt", "RFC2253"],
+                                         input="\n".join(pem) + "\n", capture_output=True, text=True).stdout or ""
+                found = re.search(r"(?:^|[,=\s])OU=([A-Za-z0-9]+)", subject)
+                if found:
+                    teams[digest] = found.group(1)
+                digest, pem = None, []
+    return teams
+
+
+def signing_identity(bundle: Path = BUNDLE, environ=os.environ) -> str:
     """The SHA-1 of an "Apple Development" identity (iOS developers have one), else "-" for an ad-hoc signature.
-    An ad-hoc signature changes with each build, and macOS then drops the Accessibility permission."""
-    found = subprocess.run(["security", "find-identity", "-v", "-p", "codesigning"], capture_output=True, text=True).stdout
-    return next((line.split()[1] for line in found.splitlines() if "Apple Development" in line), "-")
+    An ad-hoc signature changes with each build, and macOS then drops the Accessibility permission; so does a
+    signature from another team. With several identities: the team of the installed app first, then the team in
+    MAC_CU_SIGNING_TEAM, then the first one listed."""
+    found = subprocess.run(["security", "find-identity", "-v", "-p", "codesigning"], capture_output=True, text=True).stdout or ""
+    identities = [line.split()[1].upper() for line in found.splitlines() if "Apple Development" in line and len(line.split()) > 1]
+    if not identities:
+        return "-"
+    if len(identities) > 1:
+        teams = certificate_teams()
+        wanted = environ.get(SIGNING_TEAM_VARIABLE, "").strip()
+        for team in (installed_team(bundle), wanted or None):
+            match = next((identity for identity in identities if team and teams.get(identity) == team), None)
+            if match:
+                return match
+        if wanted:
+            print(f"No Apple Development identity of team {wanted} ({SIGNING_TEAM_VARIABLE}) was found; using the first one.")
+    return identities[0]
 
 
 def build_app_icon(resources: Path) -> bool:
@@ -141,8 +192,9 @@ def build_app() -> bool:
         return False
     if (HERE.parent / "always-allow.txt").exists():
         shutil.copy(HERE.parent / "always-allow.txt", temporary / "Contents" / "Resources")
+    build_view_capture_resources(temporary / "Contents" / "Resources" / "view-capture")
     sources = sorted((HERE / "mac-cu-src").glob("*.swift"))
-    built = subprocess.run(["swiftc", "-O", *map(str, sources), "-o", str(temporary / "Contents" / "MacOS" / "mac-cu")],
+    built = run_swift(["swiftc", "-O", *map(str, sources), "-o", str(temporary / "Contents" / "MacOS" / "mac-cu")],
                            capture_output=True, text=True)
     if built.returncode != 0:
         print(built.stderr.strip(), file=sys.stderr)

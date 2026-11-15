@@ -77,7 +77,10 @@ import IOSurface
         let prior = content.rotationPresentationAngle
         turn(-1); hidden()
         require(abs(content.rotationPresentationAngle-prior)<0.2,"retarget begins at sampled angle")
-        await pause(0.12); require(content.rotationPresentationAngle>prior,"reverse direction")
+        // The spring first carries its earlier velocity; how long depends on frame timing. Sample until it turns back.
+        var reversed = false
+        for _ in 0..<20 where !reversed { await pause(0.02); reversed = content.rotationPresentationAngle>prior }
+        require(reversed,"reverse direction")
         for _ in 0..<7 { turn(1); await pause(0.02); hidden() }
         await pause(0.65); restored()
         turn(1); await pause(0.48); turn(-1); hidden()

@@ -62,6 +62,13 @@ let hidUsages: [UInt16: UInt64] = [
 final class SimulatorScreenView: NSView {
     let screenLayer = CALayer()
     let touchOverlay = SimulatorTouchOverlay()
+    private let inspectionLayer = CAShapeLayer()
+    private let inspectionCaption = CATextLayer()
+    var inspectionFrame: CGRect? { didSet { needsLayout = true } }
+    private var inspectionSuppressedKeys: Set<UInt16> = []
+    var inspectionPicking = false
+    var onInspectionPick: (CGPoint) -> Void = { _ in }
+    var onInspectionPickEnd: () -> Void = {}
     var rotation = "rot0" { didSet { needsLayout = true } }
     var pixels = CGSize(width: 1, height: 1) { didSet { needsLayout = true } }
     weak var owner: SimulatorWindow?
@@ -77,6 +84,13 @@ final class SimulatorScreenView: NSView {
         screenLayer.magnificationFilter = .linear
         layer!.addSublayer(screenLayer)
         layer!.addSublayer(touchOverlay.layer)
+        inspectionLayer.fillColor = NSColor.clear.cgColor
+        inspectionLayer.strokeColor = NSColor.systemYellow.cgColor
+        inspectionLayer.lineWidth = 3; inspectionLayer.lineDashPattern = [6, 3]; inspectionLayer.zPosition = 20
+        inspectionCaption.string = "AX 선택 · 읽은 시점"; inspectionCaption.fontSize = 11
+        inspectionCaption.foregroundColor = NSColor.black.cgColor
+        inspectionCaption.backgroundColor = NSColor.systemYellow.cgColor
+        inspectionLayer.addSublayer(inspectionCaption); layer!.addSublayer(inspectionLayer)
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -101,6 +115,16 @@ final class SimulatorScreenView: NSView {
             mask.setAffineTransform(CGAffineTransform(rotationAngle: (degrees[rotation] ?? 0) * .pi / 180))
             layer!.mask = mask
         } else { layer!.mask = nil }
+        inspectionLayer.frame = bounds
+        if let rect = inspectionFrame,
+           let topLeft = simulatorTouchPosition(rect.origin, viewport: bounds, screen: shownPoints),
+           let bottomRight = simulatorTouchPosition(CGPoint(x: rect.maxX, y: rect.maxY), viewport: bounds, screen: shownPoints) {
+            let fitted = CGRect(x: topLeft.x, y: bottomRight.y, width: bottomRight.x - topLeft.x, height: topLeft.y - bottomRight.y).intersection(bounds)
+            inspectionLayer.path = fitted.isEmpty || fitted.isNull ? nil : CGPath(rect: fitted, transform: nil)
+            inspectionCaption.frame = CGRect(x: fitted.minX, y: min(bounds.maxY - 18, fitted.maxY), width: 150, height: 18)
+            inspectionCaption.contentsScale = window?.backingScaleFactor ?? 2
+            inspectionLayer.isHidden = fitted.isEmpty
+        } else { inspectionLayer.isHidden = true }
         touchOverlay.layout(viewport: bounds, screen: shownPoints, backingScale: window?.backingScaleFactor ?? 2)
         CATransaction.commit()
     }
@@ -135,6 +159,12 @@ final class SimulatorScreenView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        if inspectionPicking {
+            window?.makeFirstResponder(self)
+            guard owner?.pointerGeometryReady != false, let point = screenPoint(event, clamp: false) else { return }
+            onInspectionPick(point)
+            return
+        }
         window?.makeFirstResponder(self)  // The click makes the window key; the keyboard then comes here.
         guard owner?.pointerGeometryReady != false else { return }
         twoFingers = event.modifierFlags.contains(.option)
@@ -167,6 +197,8 @@ final class SimulatorScreenView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
+        if inspectionPicking { inspectionSuppressedKeys.insert(event.keyCode); if event.keyCode == 53 { onInspectionPickEnd() }; return }
+        inspectionSuppressedKeys.remove(event.keyCode)
         guard owner?.content.rotationPresentationActive != true else { return }
         guard keyboardEnabled else { return }
         if event.isARepeat { return }
@@ -178,6 +210,8 @@ final class SimulatorScreenView: NSView {
     }
 
     override func keyUp(with event: NSEvent) {
+        if inspectionSuppressedKeys.remove(event.keyCode) != nil { return }
+        if inspectionPicking { return }
         if event.keyCode == 0x11, event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command, .shift] { return }
         guard button(for: event) == nil, let usage = hidUsages[event.keyCode] else { return }
         owner?.key(usage, down: false)
@@ -195,6 +229,7 @@ final class SimulatorScreenView: NSView {
     }
 
     override func flagsChanged(with event: NSEvent) {
+        if inspectionPicking { return }
         guard keyboardEnabled, owner?.content.rotationPresentationActive != true, let usage = hidUsages[event.keyCode] else { return }
         if event.keyCode == 0x39 {  // Caps Lock: one press for each change (it switches the input language on iOS when set so).
             owner?.key(usage, down: true)
@@ -227,6 +262,7 @@ final class SimulatorScreenView: NSView {
     var scrollFinger: CGPoint?
 
     override func scrollWheel(with event: NSEvent) {
+        if inspectionPicking { return }
         guard event.momentumPhase.isEmpty, let owner, owner.pointerGeometryReady else { return }
         let precise = event.hasPreciseScrollingDeltas
         let dx = event.scrollingDeltaX * (precise ? 1 : 10) / scale, dy = event.scrollingDeltaY * (precise ? 1 : 10) / scale
@@ -272,6 +308,8 @@ final class SimulatorWindow: NSObject, NSWindowDelegate {
     private var applyingFrame = false
     private var manipulating = false
     private var capturePending = false
+    private lazy var inspector = SimulatorInspectorCoordinator(owner: self)
+    var inspectionHostWorkSettled: Bool { inspector.hostWorkSettled }
     private lazy var hostActions = SimulatorHostActions(deviceID: id)
     private var toolsBeforeFocus = false
     private var recordingActive = false
@@ -334,6 +372,17 @@ final class SimulatorWindow: NSObject, NSWindowDelegate {
             self.capturePending = arguments["action"] as? String == "screenshot"
             self.toolbox.submitFromChrome(arguments)
         }
+        toolbox.onCloseInspection = { [weak self] in self?.toggleToolbox() }
+        toolbox.onOpen3D = { [weak self] in self?.view.releaseInput(); self?.inspector.open() }
+        toolbox.onInspectionSelection = { [weak self] frame in self?.view.inspectionFrame = frame }
+        toolbox.onInspectionPickMode = { [weak self] enabled in
+            guard let self else { return }
+            self.view.releaseInput()
+            self.view.inspectionPicking = enabled
+            if enabled { self.window.makeKey(); self.window.makeFirstResponder(self.view) }
+        }
+        view.onInspectionPick = { [weak self] in self?.toolbox.pickInspection(at: $0) }
+        view.onInspectionPickEnd = { [weak self] in self?.toolbox.endInspectionPick(); self?.toolbox.focusInspection() }
         toolbox.onAvailabilityChanged = { [weak self] busy in self?.content.chrome.setBusy(busy) }
         content.chrome.onMenu = { [weak self] in self?.deviceMenu() ?? NSMenu() }
         content.chrome.onCleanup = { [weak self] in self?.view.releaseInput() }
@@ -450,6 +499,9 @@ final class SimulatorWindow: NSObject, NSWindowDelegate {
     private var geometryRevision: UInt64 = 0
 
     func show(_ active: ActiveScreen?) {
+        let changed = self.active?.id != active?.id || self.active?.target != active?.target ||
+            self.active?.rotation != active?.rotation || self.active?.guestRotation != active?.guestRotation ||
+            self.active?.points != active?.points
         if !presentingRotation, content.rotationPresentationActive,
            self.active?.id != active?.id || self.active?.rotation != active?.rotation {
             content.cancelRotationPresentation()
@@ -465,13 +517,19 @@ final class SimulatorWindow: NSObject, NSWindowDelegate {
             previewView?.touchOverlay.clear()
         }
         self.active = active
+        if changed { invalidateInspectionContext(reason: "화면이나 방향이 바뀌었습니다. 새로 캡처하세요.") }
         let next = shownScreen(of: device, active: active)
         if next !== screen {
+            if !changed { invalidateInspectionContext(reason: "화면 연결이 바뀌었습니다. 새로 캡처하세요.") }
             stopCallbacks()
             screen = next
             startCallbacks()
         }
+        let previousSurfaceAvailable = surface != nil
         surface = screen.flatMap(framebuffer(of:))
+        if previousSurfaceAvailable != (surface != nil), !changed {
+            invalidateInspectionContext(reason: "화면 연결 상태가 바뀌었습니다. 새로 캡처하세요.")
+        }
         view.screenLayer.contents = surface
         if let surface { view.pixels = CGSize(width: IOSurfaceGetWidth(surface), height: IOSurfaceGetHeight(surface)) }
         view.rotation = active?.rotation ?? "rot0"
@@ -490,7 +548,7 @@ final class SimulatorWindow: NSObject, NSWindowDelegate {
             let scale = min(view.bounds.width / previous.width, view.bounds.height / previous.height)
             resizeLCD(CGSize(width: points.width * scale, height: points.height * scale))
         }
-        toolbox.updateScreen(points, name: active?.name ?? "LCD", foldable: active?.foldable ?? false, rotation: view.rotation)
+        toolbox.updateScreen(points, name: deviceName + " · " + (active?.name ?? "LCD"), foldable: active?.foldable ?? false, rotation: view.rotation, screenID: active?.id ?? "main", guestRotation: active?.guestRotation ?? "rot0")
         let runtime = (device.value(forKey: "runtime") as? NSObject)?.value(forKey: "name") as? String ?? "OS"
         content.chrome.updateDevice(name: deviceName, runtime: runtime, connected: surface != nil && isBooted(device),
                                     foldable: active?.foldable ?? false, isWatch: isWatch, rotation: view.rotation, primaryDisplay: active?.primary ?? true)
@@ -549,6 +607,10 @@ final class SimulatorWindow: NSObject, NSWindowDelegate {
     }
 
     private func setToolbox(_ expanded: Bool, completion: @escaping () -> Void = {}) {
+        if !expanded {
+            SimulatorAXHostLifecycle.shared.cancelPendingReads(deviceID: id)
+            toolbox.cancelPendingAXRead(); toolbox.invalidateInspection()
+        }
         let lcd = view.bounds.size
         content.chrome.toolsVisible = expanded
         content.chrome.updateControls()
@@ -599,12 +661,18 @@ final class SimulatorWindow: NSObject, NSWindowDelegate {
     private var rotationReadbackFeedback: [String: Any]?
 
     func takeInputForPoseChange() -> (keys: Set<UInt64>, contacts: [(CGPoint, CGPoint?)], screen: ActiveScreen?) {
+        invalidateInspectionContext(reason: "기기 방향을 변경하고 있습니다.")
         pointerGeometryReady = false; geometryRevision &+= 1
         let keys = heldKeys; heldKeys.removeAll()
         return (keys, view.takeContacts(), active)
     }
 
     func commandStarted(_ activity: SimulatorToolActivity) {
+        if activity.mutatesDevice {
+            invalidateInspectionContext(reason: "기기 입력으로 캡처가 오래되었습니다. 새로 캡처하세요.")
+        } else if activity.action == "axAction" {
+            inspector.invalidate(reason: "접근성 동작으로 뷰가 바뀔 수 있습니다. 새로 캡처하세요.")
+        }
         if activity.action == "hinge" { content.cancelRotationPresentation() }
         rotationReadbackFeedback = nil
         toolbox.start(activity)
@@ -837,6 +905,7 @@ final class SimulatorWindow: NSObject, NSWindowDelegate {
     }
 
     func touch(_ point: CGPoint, _ second: CGPoint?, phase: UInt64) {
+        if phase == 0 { invalidateInspectionContext(reason: "기기에 터치를 보냈습니다. 새로 캡처하세요.") }
         // mouseUp/scroll end is itself a safety release, even if focus never changes.
         let finish = phase == 2 ? DecisionPendingRequests.beginInputCleanup() : nil
         perform(completion: finish, requiresCurrentGeometry: phase != 2) { $0.touch(point, phase: phase, screen: $1, second: second) }
@@ -845,6 +914,7 @@ final class SimulatorWindow: NSObject, NSWindowDelegate {
     /// A drag over about 0.15 s: a pan (and so a scroll view) recognizes it, where a touch that ends where it began
     /// moving does not (seen with GestureProbe for mouse wheel notches).
     func drag(from: CGPoint, to: CGPoint) {
+        invalidateInspectionContext(reason: "기기에 드래그를 보냈습니다. 새로 캡처하세요.")
         perform(requiresCurrentGeometry: true) { link, screen in
             link.touch(from, phase: 0, screen: screen)
             for step in 1...8 {
@@ -857,6 +927,7 @@ final class SimulatorWindow: NSObject, NSWindowDelegate {
     }
 
     func key(_ usage: UInt64, down: Bool) {
+        if down { invalidateInspectionContext(reason: "기기에 키 입력을 보냈습니다. 새로 캡처하세요.") }
         var finish: (() -> Void)?
         if down { heldKeys.insert(usage) }
         else if heldKeys.remove(usage) != nil { finish = DecisionPendingRequests.beginInputCleanup() }
@@ -883,6 +954,7 @@ final class SimulatorWindow: NSObject, NSWindowDelegate {
     }
 
     func button(_ usage: UInt64) {
+        invalidateInspectionContext(reason: "기기 버튼을 실행했습니다. 새로 캡처하세요.")
         perform { link, _ in
             link.button(page: 0x0C, usage: usage, down: true)
             usleep(100_000)
@@ -892,6 +964,7 @@ final class SimulatorWindow: NSObject, NSWindowDelegate {
 
     /// A crown event with a scroll phase, or a whole turn without one (a mouse wheel).
     func crown(_ phase: UInt64?, _ dy: Double) {
+        invalidateInspectionContext(reason: "Crown 입력으로 화면이 바뀔 수 있습니다. 새로 캡처하세요.")
         perform { link, _ in if let phase { link.crownEvent(phase, dy) } else { link.crown(dy) } }
     }
 
@@ -938,6 +1011,9 @@ final class SimulatorWindow: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        SimulatorAXHostLifecycle.shared.cancelPendingReads(deviceID: id)
+        invalidateInspectionContext(reason: "LCD 창이 닫혔습니다.")
+        inspector.close()
         content.cancelRotationPresentation()
         pointerGeometryReady = false; geometryRevision &+= 1
         invalidateSimulatorObservation(id)
@@ -958,6 +1034,13 @@ final class SimulatorWindow: NSObject, NSWindowDelegate {
         preview?.close()
         updateSimulatorWindowPresentation()
     }
+
+    private func invalidateInspectionContext(reason: String) {
+        SimulatorInspectionHost.invalidate(deviceID: id)
+        toolbox.cancelPendingAXRead()
+        toolbox.invalidateInspection()
+        inspector.invalidate(reason: reason)
+    }
 }
 
 /// The open windows, by UDID. Main thread only.
@@ -974,7 +1057,8 @@ func updateSimulatorWindowPresentation() {
 func bringSimulatorWindowToFront(_ open: SimulatorWindow) {
     updateSimulatorWindowPresentation()
     recentSimulatorWindowID = open.id
-    open.window.deminiaturize(nil)
+    // A redundant restore can asynchronously re-key the LCD after a newer window opens.
+    if open.window.isMiniaturized { open.window.deminiaturize(nil) }
     NSApp.activate(ignoringOtherApps: true)
     open.window.makeKeyAndOrderFront(nil)
     // A borderless glass window may be registered before its first composited

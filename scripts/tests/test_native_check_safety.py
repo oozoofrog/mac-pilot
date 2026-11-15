@@ -106,7 +106,7 @@ Thread.sleep(forTimeInterval: 20)
         with mock.patch.object(support, 'instances', side_effect=scan):
             sender.start()
             try:
-                with self.assertRaises(InterruptedError):
+                with self.assertRaises(support.NativeCheckInterrupted):
                     self.run_owned(self.worker, ['--linger'], timeout=3)
             finally:
                 sender.join(timeout=6)
@@ -119,6 +119,34 @@ Thread.sleep(forTimeInterval: 20)
         for timeout in [0, -1, float('inf'), float('nan')]:
             with self.assertRaises(ValueError):
                 self.run_owned(self.worker, ['--ok'], timeout=timeout)
+
+    def test_interrupt_inside_subprocess_poll_is_not_swallowed(self):
+        # CPython poll handles OSError from waitpid internally. Deliver the real
+        # signal at that boundary, without a timing-dependent sender thread.
+        import inspect
+        import errno
+        from types import SimpleNamespace
+        original = subprocess.Popen._internal_poll
+        parameters = inspect.signature(original).parameters
+        delivered = False
+        def polling(process, *args, **kwargs):
+            nonlocal delivered
+            if not delivered and process.args[0] == str(self.worker):
+                delivered = True
+                def interrupted_wait(*_):
+                    os.kill(os.getpid(), signal.SIGTERM)
+                    return 0, 0
+                if '_del_safe' in parameters:
+                    kwargs['_del_safe'] = SimpleNamespace(waitpid=interrupted_wait, WNOHANG=os.WNOHANG, ECHILD=errno.ECHILD)
+                else:
+                    self.assertIn('_waitpid', parameters, 'Inspect changed CPython poll boundary')
+                    kwargs['_waitpid'] = interrupted_wait
+            return original(process, *args, **kwargs)
+        with mock.patch.object(subprocess.Popen, '_internal_poll', polling):
+            with self.assertRaisesRegex(RuntimeError, 'interrupted by signal'):
+                self.run_owned(self.worker, ['--linger'], timeout=0.5)
+        self.assertTrue(delivered)
+        self.assertEqual(support.instances(self.worker), [])
 
 
 if __name__ == '__main__':

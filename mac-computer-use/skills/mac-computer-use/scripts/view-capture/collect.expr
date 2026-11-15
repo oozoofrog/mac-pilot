@@ -1,0 +1,154 @@
+({
+    // Runtime-only UIKit conversion. These polygons are observations, never verified LCD overlays.
+    double captureStarted = [[NSDate date] timeIntervalSince1970];
+    NSMutableArray *windows = [NSMutableArray array];
+    for (UIScene *scene in [[UIApplication sharedApplication] connectedScenes]) {
+        if ([scene isKindOfClass:[UIWindowScene class]]) {
+            [windows addObjectsFromArray:[(UIWindowScene *)scene windows]];
+        }
+    }
+    // Include legacy windows; remove duplicate objects rather than reconstructing ownership.
+    for (UIWindow *window in [[UIApplication sharedApplication] windows]) {
+        if (![windows containsObject:window]) [windows addObject:window];
+    }
+    NSMutableArray *pending = [windows mutableCopy];
+    NSMutableDictionary *nodes = [NSMutableDictionary dictionary];
+    BOOL bounded = YES;
+    BOOL texturePreflight = YES;
+    unsigned long long estimatedImageBytes = 0;
+    unsigned diagnosticViews = 0;
+    BOOL diagnosticsTruncated = NO;
+    while ([pending count] > 0) {
+        if ([nodes count] >= 20000) { bounded = NO; break; }
+        UIView *view = [pending lastObject];
+        [pending removeLastObject];
+        NSString *identity = [NSString stringWithFormat:@"%p", (__bridge void *)view];
+        if (nodes[identity]) continue;
+        UIWindow *window = [view isKindOfClass:[UIWindow class]] ? (UIWindow *)view : [view window];
+        UIScreen *screen = [window screen];
+        CGRect bounds = [view bounds];
+        if (__TEXTURE_PREFLIGHT__) {
+            double scale = screen ? [screen scale] : 0;
+            double pixelWidth = ceil(fabs(bounds.size.width) * scale);
+            double pixelHeight = ceil(fabs(bounds.size.height) * scale);
+            if (!isfinite(scale) || scale <= 0 || !isfinite(pixelWidth) || !isfinite(pixelHeight)
+                || pixelWidth > 4096 || pixelHeight > 4096 || [nodes count] >= 64) texturePreflight = NO;
+            else {
+                unsigned long long bytes = (unsigned long long)pixelWidth * (unsigned long long)pixelHeight * 4;
+                if (bytes > 134217728ULL - estimatedImageBytes) texturePreflight = NO;
+                else estimatedImageBytes += bytes;
+            }
+        }
+        NSMutableArray *corners = [NSMutableArray array];
+        BOOL fixtureNamed = [[view accessibilityIdentifier] hasPrefix:@"fixture."];
+        BOOL diagnose = fixtureNamed && diagnosticViews < 32;
+        if (fixtureNamed && !diagnose) diagnosticsTruncated = YES;
+        NSMutableDictionary *diagnostic = diagnose ? [NSMutableDictionary dictionary] : nil;
+        NSMutableArray *originalStored = diagnose ? [NSMutableArray array] : nil;
+        NSMutableArray *originalWindow = diagnose ? [NSMutableArray array] : nil;
+        if (window && screen) {
+            // CGPointMake loses y in the measured LLDB context; scalar getters and aggregate storage do not.
+            CGFloat x0 = CGRectGetMinX(bounds), y0 = CGRectGetMinY(bounds);
+            CGFloat x1 = CGRectGetMaxX(bounds), y1 = CGRectGetMaxY(bounds);
+            CGPoint points[4] = {bounds.origin, {x1, y0}, {x1, y1}, {x0, y1}};
+            if (diagnose) {
+                for (int j = 0; j < 4; j++) [originalStored addObject:@[@(points[j].x), @(points[j].y)]];
+            }
+            for (int i = 0; i < 4; i++) {
+                CGPoint inWindow = [view convertPoint:points[i] toView:window];
+                CGPoint fixed = [window convertPoint:inWindow toCoordinateSpace:[screen fixedCoordinateSpace]];
+                [corners addObject:@[@(fixed.x), @(fixed.y)]];
+                if (diagnose) [originalWindow addObject:@[@(inWindow.x), @(inWindow.y)]];
+            }
+        }
+        if (diagnose && window && screen) {
+            diagnosticViews++;
+            CGFloat minX = CGRectGetMinX(bounds), minY = CGRectGetMinY(bounds);
+            CGFloat maxX = CGRectGetMaxX(bounds), maxY = CGRectGetMaxY(bounds);
+            NSMutableArray *madeImmediate = [NSMutableArray array];
+            CGPoint m0 = bounds.origin;
+            [madeImmediate addObject:@[@(m0.x), @(m0.y)]];
+            CGPoint m1 = CGPointMake(maxX, minY);
+            [madeImmediate addObject:@[@(m1.x), @(m1.y)]];
+            CGPoint m2 = CGPointMake(maxX, maxY);
+            [madeImmediate addObject:@[@(m2.x), @(m2.y)]];
+            CGPoint m3 = CGPointMake(minX, maxY);
+            [madeImmediate addObject:@[@(m3.x), @(m3.y)]];
+            CGPoint madeStored[4] = {m0, m1, m2, m3};
+            CGPoint fieldStored[4] = {{bounds.origin.x, bounds.origin.y},
+                {bounds.origin.x + bounds.size.width, bounds.origin.y},
+                {bounds.origin.x + bounds.size.width, bounds.origin.y + bounds.size.height},
+                {bounds.origin.x, bounds.origin.y + bounds.size.height}};
+            NSMutableArray *madeArray = [NSMutableArray array], *madeWindow = [NSMutableArray array], *madeScreen = [NSMutableArray array];
+            NSMutableArray *fieldArray = [NSMutableArray array], *fieldWindow = [NSMutableArray array], *fieldScreen = [NSMutableArray array];
+            for (int j = 0; j < 4; j++) {
+                [madeArray addObject:@[@(madeStored[j].x), @(madeStored[j].y)]];
+                CGPoint mw = [view convertPoint:madeStored[j] toView:window];
+                CGPoint ms = [window convertPoint:mw toCoordinateSpace:[screen fixedCoordinateSpace]];
+                [madeWindow addObject:@[@(mw.x), @(mw.y)]];
+                [madeScreen addObject:@[@(ms.x), @(ms.y)]];
+                [fieldArray addObject:@[@(fieldStored[j].x), @(fieldStored[j].y)]];
+                CGPoint fw = [view convertPoint:fieldStored[j] toView:window];
+                CGPoint fs = [window convertPoint:fw toCoordinateSpace:[screen fixedCoordinateSpace]];
+                [fieldWindow addObject:@[@(fw.x), @(fw.y)]];
+                [fieldScreen addObject:@[@(fs.x), @(fs.y)]];
+            }
+            diagnostic[@"rawBounds"] = @[@(bounds.origin.x), @(bounds.origin.y), @(bounds.size.width), @(bounds.size.height)];
+            diagnostic[@"getters"] = @{@"minX": @(minX), @"minY": @(minY), @"maxX": @(maxX), @"maxY": @(maxY)};
+            diagnostic[@"originalStored"] = originalStored;
+            diagnostic[@"originalWindow"] = originalWindow;
+            diagnostic[@"originalScreen"] = corners;
+            diagnostic[@"duplicateMakeImmediate"] = madeImmediate;
+            diagnostic[@"duplicateMakeStored"] = madeArray;
+            diagnostic[@"duplicateMakeWindow"] = madeWindow;
+            diagnostic[@"duplicateMakeScreen"] = madeScreen;
+            diagnostic[@"fieldStored"] = fieldArray;
+            diagnostic[@"fieldWindow"] = fieldWindow;
+            diagnostic[@"fieldScreen"] = fieldScreen;
+            diagnostic[@"note"] = @"Original labels denote the primary aggregate corner path. Helper and field alternatives remain diagnostic only. Immediate means a local readback, not a CPU register probe.";
+        }
+        CGRect fixedBounds = screen ? (CGRect)[[screen fixedCoordinateSpace] bounds] : CGRectZero;
+        UIInterfaceOrientation orientation = [[window windowScene] interfaceOrientation];
+        nodes[identity] = @{@"id": identity, @"bounds": @[@(bounds.origin.x), @(bounds.origin.y), @(bounds.size.width), @(bounds.size.height)],
+            @"corners": corners, @"coordinateSpace": @"UIScreen.fixedCoordinateSpace points", @"verified": @NO,
+            @"overlayEnabled": @NO, @"cornerDiagnostics": diagnostic ?: (id)[NSNull null], @"clippingVerified": @NO, @"clipsToBounds": @([view clipsToBounds]),
+            @"windowID": window ? [NSString stringWithFormat:@"%p", (__bridge void *)window] : (id)[NSNull null],
+            @"screen": screen ? @{@"id": [NSString stringWithFormat:@"%p", (__bridge void *)screen],
+                                   @"bounds": @[@(fixedBounds.origin.x), @(fixedBounds.origin.y), @(fixedBounds.size.width), @(fixedBounds.size.height)],
+                                   @"scale": @([screen scale]), @"nativeScale": @([screen nativeScale]),
+                                   @"orientation": @(orientation)} : (id)[NSNull null]};
+        NSArray *children = [view subviews];
+        if ([children count] > 20000 || [pending count] > 20000 - [children count]) { bounded = NO; break; }
+        [pending addObjectsFromArray:children];
+    }
+    // The all-node image action is issued only after the bounded estimate. This is
+    // not proof of UIKit's internal allocation size and remains fixture-only.
+    id hubClass = NSClassFromString(@"DBGTargetHub");
+    id hub = hubClass ? (id)[hubClass sharedHub] : nil;
+    NSData *raw = bounded && (!__TEXTURE_PREFLIGHT__ || texturePreflight) && hub
+        ? (NSData *)[hub performRequestWithRequestInBase64:@"__REQUEST_BASE64__"] : nil;
+    NSDictionary *hierarchy = raw ? [NSJSONSerialization JSONObjectWithData:raw options:0 error:NULL] : nil;
+    CGRect scalarRect = {{11, 23}, {37, 41}};
+    CGFloat scalarMinX = CGRectGetMinX(scalarRect), scalarMinY = CGRectGetMinY(scalarRect);
+    CGFloat scalarMaxX = CGRectGetMaxX(scalarRect), scalarMaxY = CGRectGetMaxY(scalarRect);
+    CGPoint scalarMake = CGPointMake(17, 29);
+    NSArray *scalarMakeImmediate = @[@(scalarMake.x), @(scalarMake.y)];
+    CGPoint scalarField = {17, 29};
+    CGPoint scalarStored[2] = {scalarMake, scalarField};
+    NSDictionary *scalarDiagnostic = @{@"rectRaw": @[@(scalarRect.origin.x), @(scalarRect.origin.y), @(scalarRect.size.width), @(scalarRect.size.height)],
+        @"rectGetters": @[@(scalarMinX), @(scalarMinY), @(scalarMaxX), @(scalarMaxY)],
+        @"makeArguments": @[@17, @29], @"makeImmediate": scalarMakeImmediate,
+        @"fieldImmediate": @[@(scalarField.x), @(scalarField.y)],
+        @"afterArray": @[@[@(scalarStored[0].x), @(scalarStored[0].y)], @[@(scalarStored[1].x), @(scalarStored[1].y)]],
+        @"pointSize": @(sizeof(CGPoint)), @"rectSize": @(sizeof(CGRect))};
+    NSDictionary *envelope = hierarchy && bounded ? @{@"hierarchy": hierarchy,
+        @"captureIntervalUnixSeconds": @[@(captureStarted), @([[NSDate date] timeIntervalSince1970])],
+        @"geometry": @{@"nodes": nodes, @"verified": @NO, @"overlayEnabled": @NO,
+                       @"coordinateSpace": @"UIScreen.fixedCoordinateSpace points",
+                       @"diagnostics": @{@"scope": @"fixture validation only", @"viewLimit": @32, @"viewCount": @(diagnosticViews),
+                                           @"truncated": @(diagnosticsTruncated), @"scalars": scalarDiagnostic},
+                       @"clipping": @"unverified", @"screenshot": [NSNull null]},
+        @"captureTime": [[NSISO8601DateFormatter new] stringFromDate:[NSDate date]]} : nil;
+    NSData *answer = envelope ? [NSJSONSerialization dataWithJSONObject:envelope options:0 error:NULL] : nil;
+    (BOOL)(answer && [answer length] <= 16777216 && [answer writeToFile:@__ANSWER_PATH__ atomically:YES]);
+})

@@ -38,6 +38,8 @@ struct SimulatorToolActivity {
     let connection: UUID?
     let request: String?
     let action: String
+    let inspectionRead: Bool
+    let mutatesDevice: Bool
     let control: String
     let source: String
     let summary: String
@@ -55,9 +57,18 @@ struct SimulatorToolActivity {
         self.request = request
         let action = arguments["action"] as? String ?? ""
         self.action = action
+        inspectionRead = action == "axSnapshot" || (action == "describe" && arguments["inspection"] as? Bool == true)
+        mutatesDevice = ["rotate", "button", "gesture", "tap", "swipe", "press", "key", "type", "paste", "crown"].contains(action) ||
+            (action == "hinge" && (arguments["degrees"] != nil || arguments["state"] != nil))
         control = (arguments["button"] as? String).map { "\(action).\($0)" } ?? action
         self.source = source
-        summary = arguments.keys.sorted().filter { $0 != "device" && $0 != "action" }.map { key in
+        if let selected = arguments["inspectionElement"] as? [String: Any] {
+            let name = ["label", "value", "identifier"].compactMap { selected[$0] as? String }.first { !$0.isEmpty } ?? "이름 없는 요소"
+            summary = "선택: " + name
+            return
+        }
+        summary = arguments.keys.sorted().filter { !["device", "action", "inspection", "inspectionPid", "inspectionElement", "inspectionScope"].contains($0) }.map { key in
+            if key == "ax" { return "capture/node bound AX operation" }
             if key == "text" { return "글자 \((arguments[key] as? String ?? "").count)자" }
             if key == "frames" { return "접점 프레임 \((arguments[key] as? [Any] ?? []).count)개" }
             return "\(key)=\(String(describing: arguments[key]!).prefix(80))"
@@ -95,7 +106,7 @@ final class SimulatorToolboxView: NSView {
     var onRun: ([String: Any]) -> Void = { _ in }
     var onPresentReport: ((NSPopover, NSView, NSView) -> Void)?
     var onShowPersistentResult: () -> Void = {}
-    private let section = NSSegmentedControl(labels: ["검사", "결과"], trackingMode: .selectOne, target: nil, action: nil)
+    private let section = NSSegmentedControl(labels: ["화면 요소", "뷰 구조", "결과"], trackingMode: .selectOne, target: nil, action: nil)
     private var resultsSelected = false
     private var reportBody: NSScrollView!
     private let reportRoot = NSView(frame: CGRect(x: 0, y: 0, width: 380, height: 500))
@@ -104,6 +115,7 @@ final class SimulatorToolboxView: NSView {
     private let pasteRecovery = NSButton(title: "같은 글자 붙여넣기…", target: nil, action: nil)
     private var inspectionLabels: [NSControl: NSTextField] = [:]
     var onAvailabilityChanged: (Bool) -> Void = { _ in }
+    var onOpen3D: () -> Void = {}
     var confirmAction: (String) -> Bool = SimulatorToolboxView.confirm
     private(set) var screenSize = CGSize(width: 1, height: 1)
     private(set) var busy = false
@@ -122,6 +134,18 @@ final class SimulatorToolboxView: NSView {
         let span: Int
     }
     private var components: [Component] = []
+    private var inspectionEscapeMonitor: Any?
+    var onCloseInspection: () -> Void = {}
+    private let basicInspection = NSButton(title: "‹ 화면 요소 목록", target: nil, action: nil)
+    var onInspectionSelection: (CGRect?) -> Void = { _ in }
+    var onInspectionPickMode: (Bool) -> Void = { _ in }
+    private let viewHierarchy = SimulatorViewHierarchyBrowser(frame: .zero)
+    private var hierarchySelected = false
+    private let browser = SimulatorElementBrowser(frame: .zero)
+    private var advancedInspection = false
+    private var inspectionGeometry = ""
+    private var inspectionReadGeometry: String?
+    private var inspectionScope: [String: Any]?
     private var inspectionPresentation = false
     private let isWatch: Bool
     private let angle = NSSlider(value: 180, minValue: 0, maxValue: 180, target: nil, action: nil)
@@ -224,6 +248,7 @@ final class SimulatorToolboxView: NSView {
         updateInteraction()
     }
     required init?(coder: NSCoder) { fatalError() }
+    deinit { if let inspectionEscapeMonitor { NSEvent.removeMonitor(inspectionEscapeMonitor) } }
 
     private func button(_ title: String) -> NSButton {
         let control = NSButton(title: title, target: nil, action: nil)
@@ -267,6 +292,34 @@ final class SimulatorToolboxView: NSView {
     /// Reuse the original inspection controls and drafts, with one window owner.
     func useInspectionPresentation() {
         inspectionPresentation = true
+        if inspectionEscapeMonitor == nil {
+            inspectionEscapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self, self.acceptsInput, event.keyCode == 53, event.window === self.window else { return event }
+                let responder = self.window?.firstResponder as? NSView
+                let editorOwner = (responder as? NSTextView)?.delegate as? NSView
+                guard responder?.isDescendant(of: self) == true || editorOwner?.isDescendant(of: self) == true else { return event }
+                if self.browser.isPicking { self.browser.endPick(); self.focusInspection() }
+                else { self.onCloseInspection() }
+                return nil
+            }
+        }
+        addSubview(browser); addSubview(viewHierarchy); viewHierarchy.isHidden = true
+        viewHierarchy.setAvailability(false, reason: "뷰 구조 캡처를 사용할 수 없습니다. 앱 정지 후 복구를 확인할 수 없어 실행하지 않습니다.")
+        basicInspection.target = self; basicInspection.action = #selector(showBasicInspection); addSubview(basicInspection)
+        browser.onSelection = { [weak self] in self?.onInspectionSelection($0) }
+        browser.onPickMode = { [weak self] in self?.onInspectionPickMode($0) }
+        browser.onPress = { [weak self] row, pid in self?.submit(["action": "press", "inspectionElement": row, "inspectionPid": pid]) }
+        browser.onAXAction = { [weak self] in self?.submit(["action": "axAction", "ax": $0]) }
+        browser.onOpen3D = { [weak self] in self?.onOpen3D() }
+        browser.onRefresh = { [weak self] in self?.refreshInspection() }
+        browser.onTap = { [weak self] row, pid in
+            self?.submit(["action": "tap", "inspectionElement": row, "inspectionPid": pid])
+        }
+        browser.onAdvanced = { [weak self] advanced in
+            guard let self else { return }
+            self.advancedInspection = advanced
+            self.selectResults(false)
+        }
         section.target = self; section.action = #selector(changeSection); section.selectedSegment = 0
         section.setAccessibilityLabel("검사 작업 영역"); addSubview(section)
         for item in components {
@@ -277,34 +330,59 @@ final class SimulatorToolboxView: NSView {
         }
         for item in components where !item.glass.isHidden {
             if let field = item.control as? NSTextField {
-                let label = NSTextField(labelWithString: (field.placeholderString ?? "").replacingOccurrences(of: " ⏎", with: ""))
+                let title = actionNames[field] == "views" ? "UIView 검사 · 앱 복구 확인 전 사용 불가" : (field.placeholderString ?? "").replacingOccurrences(of: " ⏎", with: "")
+                let label = NSTextField(labelWithString: title)
                 label.font = .systemFont(ofSize: 11, weight: .medium)
                 item.glass.content.addSubview(label); inspectionLabels[field] = label
                 field.isBordered = true; field.drawsBackground = true
             }
         }
+        selectResults(false)
         needsLayout = true
     }
-    @objc private func changeSection() { selectResults(section.selectedSegment == 1) }
+    @objc private func showBasicInspection() { advancedInspection = false; selectResults(false) }
+    @objc private func changeSection() {
+        if section.selectedSegment == 1 {
+            selectResults(false); hierarchySelected = true; browser.suspendSelection(); onInspectionSelection(nil)
+            browser.isHidden = true; viewHierarchy.isHidden = false; basicInspection.isHidden = true
+            for item in components { item.glass.isHidden = true }
+            section.selectedSegment = 1; viewHierarchy.focusTree(); needsLayout = true
+        } else { selectResults(section.selectedSegment == 2) }
+    }
     func selectResults(_ selected: Bool) {
         guard inspectionPresentation else { return }
-        report.close(); resultsSelected = selected; section.selectedSegment = selected ? 1 : 0
+        report.close(); resultsSelected = selected; hierarchySelected = false; viewHierarchy.isHidden = true; section.selectedSegment = selected ? 2 : 0
+        browser.suspendSelection(); onInspectionSelection(nil)
         if selected { reportBody.removeFromSuperview(); addSubview(reportBody); continueResult.isHidden = true }
         else { reportBody.removeFromSuperview(); reportRoot.addSubview(reportBody); reportBody.frame = reportRoot.bounds; continueResult.isHidden = false }
         for item in components {
             let retained = !["button.home","button.lock","button.siri","rotate","hinge","type","paste","key","crown"].contains(actionNames[item.control] ?? "")
-            item.glass.isHidden = selected || !retained
+            item.glass.isHidden = selected || !retained || !advancedInspection
         }
+        basicInspection.isHidden = selected || !advancedInspection
+        browser.isHidden = selected || advancedInspection
         needsLayout = true; layoutSubtreeIfNeeded(); updateInteraction()
     }
+    func pickInspection(at point: CGPoint) { browser.pick(at: point) }
+    func endInspectionPick() { browser.endPick() }
+    func invalidateInspection() { browser.cancelRead(); inspectionReadGeometry = nil; browser.invalidate(); viewHierarchy.invalidate() }
+    func cancelPendingAXRead() { browser.cancelRead(); inspectionReadGeometry = nil }
+    func refreshInspection() {
+        guard inspectionPresentation, acceptsInput, !busy, !manualPending else { return }
+        submit(["action": "axSnapshot", "inspection": true])
+    }
     func focusInspection() {
+        if hierarchySelected { window?.makeKey(); viewHierarchy.focusTree(); return }
+        if !resultsSelected && !advancedInspection { window?.makeKey(); browser.focusList(); return }
         let first: NSView? = resultsSelected ? result : components.first { !$0.glass.isHidden && $0.control is NSTextField }?.control
         window?.makeKey(); if let first { window?.makeFirstResponder(first) }
     }
     @objc private func continueInInspection() { report.close(); onShowPersistentResult() }
 
     func setFloatingPresentation(_ visible: Bool) {
+        if !visible { viewHierarchy.invalidate() }
         expanded = visible
+        if !visible { browser.cancelRead(); inspectionReadGeometry = nil }
         isHidden = !visible
         transitioning = false
         animationVersion += 1
@@ -314,9 +392,14 @@ final class SimulatorToolboxView: NSView {
         clipsToBounds = true
         needsLayout = true
         updateInteraction()
+        // AX capture requires an explicit refresh; opening inspection only presents controls.
     }
 
-    func updateScreen(_ size: CGSize, name: String, foldable: Bool, rotation: String = "rot0") {
+    func updateScreen(_ size: CGSize, name: String, foldable: Bool, rotation: String = "rot0", screenID: String = "", guestRotation: String = "") {
+        let geometry = "\(name)|\(screenID)|\(size)|\(rotation)|\(guestRotation)"
+        if geometry != inspectionGeometry { viewHierarchy.invalidate(); browser.invalidate(); inspectionGeometry = geometry }
+        viewHierarchy.setContext(name + " · \(Int(size.width))×\(Int(size.height))pt")
+        browser.setContext(name + " · \(Int(size.width))×\(Int(size.height))pt")
         screenSize = size
         angleGlass?.isHidden = inspectionPresentation || !foldable
         for item in components { (item.control as? SimulatorGesturePad)?.screenSize = size }
@@ -339,13 +422,13 @@ final class SimulatorToolboxView: NSView {
             return components.map { item in
                 let width = max(1,bounds.width-24)
                 if let index = fields.firstIndex(where: { $0.control === item.control }) {
-                    return CGRect(x: 12,y: bounds.height-102-CGFloat(index)*58,width: width,height: 54)
+                    return CGRect(x: 12,y: bounds.height-132-CGFloat(index)*58,width: width,height: 54)
                 }
                 if let index = pads.firstIndex(where: { $0.control === item.control }) {
-                    return CGRect(x: 12+CGFloat(index)*(width/3),y: bounds.height-408,width: width/3-8,height: 64)
+                    return CGRect(x: 12+CGFloat(index)*(width/3),y: bounds.height-438,width: width/3-8,height: 64)
                 }
                 let isCapture = actionNames[item.control] == "screenshot"
-                return CGRect(x: isCapture ? 12 : 20 + width/2, y: bounds.height-464, width: width/2-8, height: 44)
+                return CGRect(x: isCapture ? 12 : 20 + width/2, y: bounds.height-494, width: width/2-8, height: 44)
             }
         }
         return components.map { item in
@@ -357,6 +440,9 @@ final class SimulatorToolboxView: NSView {
         super.layout()
         guard bounds.width >= 72, bounds.height > 0 else { return }
         if inspectionPresentation {
+            basicInspection.frame = CGRect(x: 12, y: bounds.height - 72, width: bounds.width - 24, height: 26)
+            viewHierarchy.frame = CGRect(x: 0, y: 0, width: bounds.width, height: max(1, bounds.height - 44))
+            browser.frame = CGRect(x: 0, y: 0, width: bounds.width, height: max(1, bounds.height - 44))
             section.frame = CGRect(x: 12, y: bounds.height - 38, width: max(1, bounds.width - 24), height: 28)
             if resultsSelected { reportBody.frame = CGRect(x: 12, y: 12, width: max(1, bounds.width - 24), height: max(1, bounds.height - 58)) }
         }
@@ -401,7 +487,8 @@ final class SimulatorToolboxView: NSView {
             item.glass.setAccessibilityHidden(!visible)
             item.control.setAccessibilityHidden(!visible)
             item.control.refusesFirstResponder = !visible
-            item.control.isEnabled = visible && (actions[item.control] == nil || item.control is NSTextField || (!busy && !manualPending))
+            let safeInspectionControl = !inspectionPresentation || actionNames[item.control] != "views"
+            item.control.isEnabled = safeInspectionControl && visible && (actions[item.control] == nil || item.control is NSTextField || (!busy && !manualPending))
         }
     }
 
@@ -475,6 +562,8 @@ final class SimulatorToolboxView: NSView {
     }
 
     func start(_ activity: SimulatorToolActivity) {
+        if activity.inspectionRead && inspectionReadGeometry != nil { browser.beginRead() } else if activity.action != "axAction" { browser.invalidate() }
+        viewHierarchy.invalidate()
         current = activity.id
         busy = true
         result.string = "응답 대기 중…"
@@ -492,6 +581,19 @@ final class SimulatorToolboxView: NSView {
         busy = false
         if activity.source == "직접 조작" { manualPending = false }
         let failed = response["isError"] as? Bool == true
+        if activity.inspectionRead, inspectionReadGeometry != nil {
+            let data = (response["structuredContent"] as? [String: Any])?["inspection"] as? [String: Any]
+            let message = (response["content"] as? [[String: Any]])?.compactMap { $0["text"] as? String }.joined(separator: "\n")
+            inspectionScope = inspectionReadGeometry == inspectionGeometry && !failed ? data?["scope"] as? [String: Any] : nil
+            browser.finishRead(inspectionReadGeometry == inspectionGeometry && !failed && inspectionScope != nil && (activity.action != "axSnapshot" || data?["axSnapshot"] is [String: Any]) ? data : nil,
+                               error: failed ? message : inspectionScope == nil && inspectionReadGeometry == inspectionGeometry ? "대상 화면 정보를 확인하지 못했습니다. 새로 읽으세요." : "화면이 바뀌었습니다. 새로 읽으세요.")
+            inspectionReadGeometry = nil
+        }
+        if activity.action == "axAction" { browser.finishAXAction(response) }
+        if inspectionPresentation && !activity.inspectionRead && activity.action != "axAction" {
+            let message = (response["content"] as? [[String: Any]])?.compactMap { $0["text"] as? String }.joined(separator: "\n") ?? ""
+            browser.completeAction(failed: failed, message: message)
+        }
         let state = failed ? "실패" : "응답 완료"
         status.title = state + " · " + activity.title
         history.insert(state + " · " + activity.source + " · " + activity.title, at: 0)
@@ -549,8 +651,13 @@ final class SimulatorToolboxView: NSView {
             else { report.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxX) }
         }
     }
-    private func submit(_ arguments: [String: Any], fromChrome: Bool = false) {
+    private func submit(_ input: [String: Any], fromChrome: Bool = false) {
+        var arguments = input
+        if arguments["inspectionElement"] != nil && arguments["inspectionScope"] == nil { arguments["inspectionScope"] = inspectionScope }
         guard (fromChrome || acceptsInput), !busy, !manualPending else { return }
+        if arguments["action"] as? String == "axSnapshot" || (arguments["action"] as? String == "describe" && arguments["inspection"] as? Bool == true) {
+            inspectionReadGeometry = inspectionGeometry; browser.beginRead()
+        }
         lastManual = arguments
         manualPending = true
         status.title = "대기 중 · 직접 조작"
@@ -634,4 +741,366 @@ final class SimulatorToolboxView: NSView {
         alert.addButton(withTitle: "취소")
         return alert.runModal() == .alertFirstButtonReturn
     }
+}
+
+/// Browsing is read-only. Only the explicit tap button sends input to the guest.
+final class SimulatorElementBrowser: NSView, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
+    var onSelection: (CGRect?) -> Void = { _ in }
+    var onPickMode: (Bool) -> Void = { _ in }
+    var onPress: ([String: Any], Int) -> Void = { _, _ in }
+    var onRefresh: () -> Void = {}
+    var onTap: ([String: Any], Int) -> Void = { _, _ in }
+    var onAdvanced: (Bool) -> Void = { _ in }
+    var onAXAction: ([String: Any]) -> Void = { _ in }
+    var onOpen3D: () -> Void = {}
+    private var axExpiry: DispatchWorkItem?
+    private var axSnapshot: SimulatorAXUISnapshot?
+    private var axNode: SimulatorAXUINode?
+    private var axBinding: (capture: String, node: String)?
+    private var axReceipt: String?
+    private var axExpected: SimulatorAXScalar?
+    private let valueDraft = NSTextField(string: "")
+    private let axApply = NSButton(title: "값 적용", target: nil, action: nil)
+    private let axRestore = NSButton(title: "이 변경 복원", target: nil, action: nil)
+    private let axIncrement = NSButton(title: "증가", target: nil, action: nil)
+    private let axDecrement = NSButton(title: "감소", target: nil, action: nil)
+    private let axCustom = NSPopUpButton()
+    private let axRunCustom = NSButton(title: "선택한 사용자 동작 실행", target: nil, action: nil)
+    private let open3D = NSButton(title: "3D 뷰 검사…", target: nil, action: nil)
+    private let target = NSTextField(wrappingLabelWithString: "현재 LCD · 전면 앱")
+    private let state = NSTextField(wrappingLabelWithString: "화면 요소를 읽으려면 새로 읽기를 누르세요.")
+    private let filter = NSSearchField()
+    private let refresh = NSButton(title: "화면 요소 새로 읽기", target: nil, action: nil)
+    private let pickButton = NSButton(title: "화면에서 선택", target: nil, action: nil)
+    private let press = NSButton(title: "접근성 동작 실행 (AXPress)", target: nil, action: nil)
+    private var picking = false
+    var isPicking: Bool { picking }
+    private let tap = NSButton(title: "선택한 위치 탭", target: nil, action: nil)
+    private let advanced = NSButton(title: "전문 도구…", target: nil, action: nil)
+    private let details = NSTextField(wrappingLabelWithString: "목록에서 요소를 선택하세요. 선택만으로 기기를 조작하지 않습니다.")
+    private let table = NSTableView()
+    private let scroll = NSScrollView()
+    private var elements: [[String: Any]] = []
+    private var visible: [[String: Any]] = []
+    private var pid = 0
+    private var fresh = false
+    private var pending = false
+    private var context = "현재 LCD"
+    private let stack = NSStackView()
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        refresh.target = self; refresh.action = #selector(readElements)
+        tap.target = self; tap.action = #selector(tapSelection); tap.isEnabled = false
+        pickButton.target = self; pickButton.action = #selector(togglePick); pickButton.isEnabled = false
+        press.target = self; press.action = #selector(pressSelection); press.isEnabled = false
+        advanced.target = self; advanced.action = #selector(toggleAdvanced)
+        for (button, action) in [(axApply, #selector(applyAXValue)), (axRestore, #selector(restoreAXValue)), (axIncrement, #selector(incrementAX)), (axDecrement, #selector(decrementAX)), (axRunCustom, #selector(customAX)), (open3D, #selector(openAX3D))] { button.target = self; button.action = action }
+        valueDraft.identifier = NSUserInterfaceItemIdentifier("axValueDraft")
+        valueDraft.placeholderString = "적용할 값"
+        axCustom.target = self; axCustom.action = #selector(selectCustomAX)
+        disableAXControls()
+        filter.placeholderString = "목록 필터 (선택 사항)"; filter.delegate = self
+        filter.setAccessibilityLabel("읽은 화면 요소 필터")
+        table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("element")))
+        table.headerView = nil; table.rowHeight = 46; table.delegate = self; table.dataSource = self
+        table.allowsEmptySelection = true; table.setAccessibilityLabel("화면 요소 · 방향키로 선택")
+        scroll.documentView = table; scroll.hasVerticalScroller = true
+        let buttons = NSStackView(views: [refresh, pickButton]); buttons.spacing = 8
+        let detailScroll = NSScrollView(); detailScroll.hasVerticalScroller = true
+        detailScroll.documentView = details
+        details.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([details.widthAnchor.constraint(equalTo: detailScroll.contentView.widthAnchor),
+            details.leadingAnchor.constraint(equalTo: detailScroll.contentView.leadingAnchor),
+            details.topAnchor.constraint(equalTo: detailScroll.contentView.topAnchor),
+            detailScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 40)])
+        let detailHeight = detailScroll.heightAnchor.constraint(equalToConstant: 100); detailHeight.priority = .defaultHigh; detailHeight.isActive = true
+        let execution = NSStackView(views: [tap, press]); execution.orientation = .vertical; execution.alignment = .leading; execution.spacing = 6
+        let editStack = NSStackView(views: [execution, NSStackView(views: [axIncrement, axDecrement]), axCustom, axRunCustom, valueDraft, NSStackView(views: [axApply, axRestore]), open3D, advanced])
+        editStack.orientation = .vertical; editStack.alignment = .leading; editStack.spacing = 6
+        let edits = NSScrollView(); edits.hasVerticalScroller = true; edits.documentView = editStack
+        editStack.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([editStack.widthAnchor.constraint(equalTo: edits.contentView.widthAnchor), editStack.topAnchor.constraint(equalTo: edits.contentView.topAnchor), editStack.leadingAnchor.constraint(equalTo: edits.contentView.leadingAnchor), edits.heightAnchor.constraint(greaterThanOrEqualToConstant: 80)])
+        let editHeight = edits.heightAnchor.constraint(equalToConstant: 160); editHeight.priority = .defaultHigh; editHeight.isActive = true
+        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 10
+        for view in [target, buttons, filter, state, scroll, detailScroll, edits] { stack.addArrangedSubview(view) }
+        addSubview(stack); stack.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 100)])
+        for view in [target, filter, state, scroll, detailScroll, edits] { view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
+        target.font = .systemFont(ofSize: 13, weight: .semibold)
+        for label in [target, state] { label.setContentCompressionResistancePriority(.required, for: .vertical) }
+        filter.setContentCompressionResistancePriority(.required, for: .vertical)
+        state.font = .systemFont(ofSize: 11); details.font = .systemFont(ofSize: 11)
+        details.maximumNumberOfLines = 0
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    func suspendSelection() { endPick(); table.deselectAll(nil); onSelection(nil) }
+    func endPick() {
+        guard picking else { return }
+        picking = false; pickButton.title = "화면에서 선택"; onPickMode(false)
+    }
+    @objc private func togglePick() {
+        if picking { endPick(); return }
+        guard fresh else { return }
+        picking = true; pickButton.title = "화면 선택 종료 (Esc)"; onPickMode(true)
+        state.stringValue = "LCD에서 위치를 고르세요. 터치를 보내지 않습니다. Esc로 종료합니다."
+    }
+    func pick(at point: CGPoint) {
+        guard fresh, picking else { return }
+        visible = elements.filter { row in
+            CGRect(x: (row["x"] as? NSNumber)?.doubleValue ?? 0, y: (row["y"] as? NSNumber)?.doubleValue ?? 0,
+                   width: (row["width"] as? NSNumber)?.doubleValue ?? 0, height: (row["height"] as? NSNumber)?.doubleValue ?? 0).contains(point)
+        }.sorted { (($0["depth"] as? Int) ?? 0) > (($1["depth"] as? Int) ?? 0) }
+        table.deselectAll(nil); table.reloadData()
+        state.stringValue = visible.isEmpty ? "이 위치에 읽은 AX 요소가 없습니다. 새로 읽거나 다른 위치를 고르세요." : "이 위치의 AX 프레임 후보 \(visible.count)개 · 목록에서 직접 선택하세요."
+        onSelection(nil) // Candidates always await an explicit list selection.
+    }
+    func completeAction(failed: Bool, message: String) {
+        invalidate(failed ? "실행 실패 · " + message : "실행 완료 · 화면 요소를 새로 읽어 다음 대상을 선택하세요.")
+    }
+    func cancelRead() { pending = false; refresh.isEnabled = true; invalidate() }
+    func focusList() { window?.makeFirstResponder(table) }
+    func setContext(_ value: String) { guard context != value else { return }; context = value; target.stringValue = value + " · 전면 앱" }
+    func invalidate(_ message: String = "화면이 바뀌었을 수 있습니다. 새로 읽고 선택하세요.") {
+        axExpiry?.cancel(); axExpiry = nil
+        pending = false; disableAXControls(); axBinding = nil; axReceipt = nil; axNode = nil
+        fresh = false; endPick(); onSelection(nil); pickButton.isEnabled = false; press.isEnabled = false; table.deselectAll(nil); tap.isEnabled = false
+        details.stringValue = "선택을 해제했습니다. 새로 읽고 목록에서 선택하세요."
+        state.stringValue = message
+    }
+    func beginRead() { invalidate("화면 요소 읽는 중…"); pending = true; refresh.isEnabled = false }
+    func finishRead(_ data: [String: Any]?, error: String?) {
+        pending = false; refresh.isEnabled = true
+        guard let data, let rows = data["elements"] as? [[String: Any]], let pid = (data["pid"] as? NSNumber)?.intValue else {
+            elements = []; applyFilter(); invalidate(error ?? "요소를 읽지 못했습니다. 연결과 권한을 확인하고 다시 읽으세요."); return
+        }
+        axSnapshot = nil
+        if let wire = data["axSnapshot"] as? [String: Any] {
+            do { axSnapshot = try SimulatorAXUISnapshot(wire) }
+            catch { elements = []; applyFilter(); invalidate("AX snapshot validation failed"); return }
+        }
+        self.pid = pid; elements = rows.filter { $0["offScreen"] as? Bool != true }
+        target.stringValue = context + " · " + (data["app"] as? String ?? "전면 앱") + " · " + DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium) + "에 읽음"
+        fresh = true; pickButton.isEnabled = true; applyFilter()
+        if let snapshot = axSnapshot, let expiry = snapshot.expiresMonotonicNS {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.axSnapshot?.captureID == snapshot.captureID else { return }
+                self.invalidate("expiredCapture · 캡처 보관 시간이 지났습니다. 새로 읽으세요.")
+            }
+            axExpiry = work
+            DispatchQueue.main.asyncAfter(deadline: DispatchTime(uptimeNanoseconds: expiry), execute: work)
+        }
+    }
+    private func name(_ row: [String: Any]) -> String {
+        for key in ["label", "value", "identifier"] { if let value = row[key] as? String, !value.isEmpty { return value } }
+        return "이름 없는 요소"
+    }
+    private func applyFilter() {
+        disableAXControls(); axBinding = nil; axReceipt = nil; axNode = nil
+        let query = filter.stringValue
+        visible = elements
+        if !query.isEmpty { visible = elements.filter { row in ["label", "value", "identifier", "role"].contains { (row[$0] as? String ?? "").localizedCaseInsensitiveContains(query) } } }
+        table.deselectAll(nil); table.reloadData(); tap.isEnabled = false; press.isEnabled = false; onSelection(nil)
+        state.stringValue = !fresh ? "이 목록은 이전 화면입니다. 새로 읽은 뒤 선택하세요." : elements.isEmpty ? "이 화면에서 접근성 요소를 얻지 못했습니다. 새로 읽거나 LCD를 직접 조작하세요." : visible.isEmpty ? "필터에 맞는 요소가 없습니다. 필터를 지워 보세요." : "화면 요소 \(visible.count)개 · 선택 후 위치를 확인하세요."
+    }
+    func controlTextDidChange(_ obj: Notification) { applyFilter() }
+    func numberOfRows(in tableView: NSTableView) -> Int { visible.count }
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let item = visible[row]
+        let text = NSTextField(wrappingLabelWithString: String(repeating: "  ", count: min(6, item["depth"] as? Int ?? 0)) + name(item) + "\n" + (item["role"] as? String ?? "") + (item["inside"] as? Bool == true ? " · 화면 안" : " · 일부만 보임"))
+        text.font = .systemFont(ofSize: 12); text.maximumNumberOfLines = 2
+        return text
+    }
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        let index = table.selectedRow
+        guard visible.indices.contains(index) else { disableAXControls(); axBinding = nil; axReceipt = nil; axNode = nil; tap.isEnabled = false; press.isEnabled = false; onSelection(nil); return }
+        let row = visible[index]
+        disableAXControls(); axBinding = nil; axReceipt = nil; axNode = nil
+        let x = (row["x"] as? NSNumber)?.doubleValue ?? 0, y = (row["y"] as? NSNumber)?.doubleValue ?? 0
+        let w = (row["width"] as? NSNumber)?.doubleValue ?? 0, h = (row["height"] as? NSNumber)?.doubleValue ?? 0
+        details.stringValue = "✓ 선택: " + name(row) + "\n중심 \(Int(x+w/2)), \(Int(y+h/2))pt · 크기 \(Int(w))×\(Int(h))pt\n탭하면 현재 기기 화면을 조작합니다."
+        let enabled = row["enabled"] as? Bool
+        let actions = row["actions"] as? [String] ?? []
+        details.stringValue += "\nID: " + (row["identifier"] as? String ?? "") + " · 값: " + (row["value"] as? String ?? "")
+        details.stringValue += "\n활성: " + (enabled.map { $0 ? "예" : "아니요" } ?? "제공되지 않음")
+        let unique = elements.filter { NSDictionary(dictionary: $0).isEqual(to: row) }.count == 1
+        press.isEnabled = fresh && unique && !pending && enabled != false && actions.contains("AXPress")
+        tap.isEnabled = fresh && unique && !pending && enabled != false && row["inside"] as? Bool == true && w > 0 && h > 0
+        if !unique { details.stringValue += "\n동일한 속성의 요소가 여러 개여서 실행할 수 없습니다." }
+        else if enabled == false { details.stringValue += "\n기기에서 비활성 상태로 제공한 요소입니다." }
+        else if row["inside"] as? Bool != true { details.stringValue += "\n일부만 보이는 요소는 위치 탭을 보내지 않습니다." }
+        if !actions.contains("AXPress") { details.stringValue += "\n이 요소는 AXPress를 제공하지 않습니다." }
+        if let snapshot = axSnapshot, let id = row["nodeID"] as? String, let node = snapshot.nodes[id] {
+            axNode = node; axExpected = node.value; axCustom.removeAllItems()
+            axCustom.addItem(withTitle: "사용자 동작 선택…")
+            axCustom.lastItem?.isEnabled = false
+            for item in node.custom {
+                axCustom.addItem(withTitle: item.name.text + " · " + item.handle)
+                axCustom.lastItem?.representedObject = item.handle
+            }
+            axCustom.selectItem(at: 0)
+            valueDraft.stringValue = node.value?.text ?? "값 제공 안 됨"
+            valueDraft.isEnabled = fresh && node.operations.contains("setValue") && node.value != nil
+            press.isEnabled = fresh && !pending && node.operations.contains("press")
+            tap.isEnabled = false // Typed AX selection never grants HID authority.
+            axIncrement.isEnabled = fresh && !pending && node.operations.contains("increment")
+            axDecrement.isEnabled = fresh && !pending && node.operations.contains("decrement")
+            axCustom.isEnabled = fresh && !pending && node.operations.contains("custom") && !node.custom.isEmpty
+            axApply.isEnabled = fresh && !pending && valueDraft.isEnabled
+            details.stringValue = snapshot.summary + "\nNode: " + node.id + "\nParent: " + (node.parent ?? "root") + "\nOrdered children: " + node.children.joined(separator: ", ")
+            for key in node.fields.keys.sorted() { let field = node.fields[key]!; details.stringValue += "\n\(key): [\(field.status)] \(field.text)" }
+            details.stringValue += "\n" + node.reasons.joined(separator: "\n")
+            if node.value == nil { details.stringValue += "\n값 초안 사용 불가 · 값을 제공하지 않거나 보호 상태가 확인되지 않았습니다." }
+        }
+        onSelection(fresh ? CGRect(x: x, y: y, width: w, height: h) : nil)
+        NSAccessibility.post(element: details, notification: .valueChanged)
+    }
+    @objc private func readElements() { onRefresh() }
+    @objc private func pressSelection() {
+        guard fresh, press.isEnabled, visible.indices.contains(table.selectedRow) else { return }
+        if axSnapshot != nil { sendAX("press"); return }
+        let row = visible[table.selectedRow]; invalidate("접근성 동작 실행 중…"); onPress(row, pid)
+    }
+    @objc private func tapSelection() {
+        guard fresh, tap.isEnabled, visible.indices.contains(table.selectedRow) else { return }
+        let row = visible[table.selectedRow]; invalidate("선택한 위치 탭 실행 중…"); onTap(row, pid)
+    }
+    private func disableAXControls() {
+        for control in [axApply, axRestore, axIncrement, axDecrement, axRunCustom] { control.isEnabled = false }
+        valueDraft.isEnabled = false; axCustom.isEnabled = false
+    }
+    private func sendAX(_ operation: String, extra: [String: Any] = [:]) {
+        guard fresh, !pending, let snapshot = axSnapshot, let node = axNode,
+              operation == "restore" ? axReceipt != nil : node.operations.contains(operation) else { return }
+        var wire: [String: Any] = ["captureID": snapshot.captureID, "nodeID": node.id, "operation": operation]
+        wire.merge(extra) { _, new in new }
+        guard (try? SimulatorAXEnvelope(wire)) != nil else { state.stringValue = "값의 자료형 또는 동작 입력이 유효하지 않습니다."; return }
+        axBinding = (snapshot.captureID, node.id); pending = true; disableAXControls(); press.isEnabled = false; tap.isEnabled = false
+        state.stringValue = "AX 동작 응답 대기 중…"; onAXAction(wire)
+    }
+    func finishAXAction(_ response: [String: Any]) {
+        guard let binding = axBinding, let snapshot = axSnapshot, let node = axNode,
+              binding.capture == snapshot.captureID, binding.node == node.id else { return }
+        pending = false
+        let structured = response["structuredContent"] as? [String: Any]
+        let result = structured?["axResult"] as? [String: Any]
+        if let result {
+            guard let returned = structured?["axBinding"] as? [String: Any], returned["captureID"] as? String == binding.capture, returned["nodeID"] as? String == binding.node else { return }
+            state.stringValue = "AX: \(result["state"] ?? "unknown") · delivery: \(result["delivery"] ?? "unknown") · readback: \(result["readback"] ?? "unavailable")"
+            axReceipt = result["restoreReceipt"] as? String
+            if let wire = result["readback"] as? [String: Any] { axExpected = try? SimulatorAXScalar(wire) }
+            axRestore.isEnabled = axReceipt != nil
+        } else {
+            state.stringValue = "AX 오류 · " + ((response["content"] as? [[String: Any]])?.compactMap { $0["text"] as? String }.joined(separator: "\n") ?? "응답 없음")
+        }
+        // No implicit retry or retarget after failure/staleness/uncertainty. Draft remains bound to this selection.
+        fresh = false; axBinding = nil; refresh.isEnabled = true
+    }
+    @objc private func applyAXValue() {
+        guard let expected = axExpected else { return }
+        do { let value = try expected.draft(valueDraft.stringValue); sendAX("setValue", extra: ["expected": expected.wire, "value": value.wire]) }
+        catch { state.stringValue = "자료형이 맞지 않습니다. boolean은 true 또는 false, number는 유한 수를 입력하세요." }
+    }
+    @objc private func restoreAXValue() {
+        guard let receipt = axReceipt else { return }
+        // Explicit receipt-bound restore is the sole action permitted after a delivered setter readback.
+        fresh = true; sendAX("restore", extra: ["handle": receipt]); axReceipt = nil
+    }
+    @objc private func incrementAX() { sendAX("increment") }
+    @objc private func decrementAX() { sendAX("decrement") }
+    @objc private func selectCustomAX() {
+        axRunCustom.isEnabled = fresh && !pending && axCustom.isEnabled &&
+            axNode?.custom.contains(where: { $0.handle == axCustom.selectedItem?.representedObject as? String }) == true
+    }
+    @objc private func customAX() {
+        guard axRunCustom.isEnabled, let node = axNode, let handle = axCustom.selectedItem?.representedObject as? String,
+              node.custom.contains(where: { $0.handle == handle }) else { return }
+        sendAX("custom", extra: ["handle": handle])
+    }
+    @objc private func openAX3D() { onOpen3D() }
+    @objc private func toggleAdvanced() { onAdvanced(true) }
+}
+
+/// UIKit snapshots remain separate from AX elements and never enable guest actions.
+final class SimulatorViewHierarchyBrowser: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate {
+    private final class Node: NSObject {
+        let data: [String: Any]
+        let children: [Node]
+        init(_ data: [String: Any]) { self.data = data; children = (data["children"] as? [[String: Any]] ?? []).map(Node.init) }
+    }
+    var onCapture: () -> Void = {}
+    private let capture = NSButton(title: "뷰 구조 캡처…", target: nil, action: nil)
+    private let state = NSTextField(wrappingLabelWithString: "뷰 구조는 앱 내부의 UIKit 뷰 관계입니다. AX 요소 목록과 다르며 자동으로 캡처하지 않습니다.")
+    private let target = NSTextField(wrappingLabelWithString: "현재 LCD · 전면 앱")
+    private let properties = NSTextView()
+    private let tree = NSOutlineView()
+    private var roots: [Node] = []
+    private var snapshot: [String: Any]?
+    private var context = "현재 LCD"
+    private var isStale = false
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        capture.target = self; capture.action = #selector(captureViews)
+        capture.isEnabled = false
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("view"))
+        tree.addTableColumn(column); tree.outlineTableColumn = column; tree.headerView = nil
+        tree.rowHeight = 26; tree.delegate = self; tree.dataSource = self
+        tree.setAccessibilityLabel("캡처한 UIKit 뷰 구조 · 좌우 방향키로 펼치기와 접기")
+        let scroll = NSScrollView(); scroll.documentView = tree; scroll.hasVerticalScroller = true
+        properties.isEditable = false; properties.isSelectable = true; properties.font = .systemFont(ofSize: 12)
+        properties.isVerticallyResizable = true; properties.isHorizontallyResizable = false
+        properties.textContainer?.widthTracksTextView = true; properties.setAccessibilityLabel("선택한 뷰의 캡처 속성")
+        let detail = NSScrollView(); detail.documentView = properties; detail.hasVerticalScroller = true
+        detail.heightAnchor.constraint(equalToConstant: 170).isActive = true
+        let stack = NSStackView(views: [target, capture, state, scroll, detail])
+        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 10
+        addSubview(stack); stack.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12), stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 12), stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 80)])
+        for view in [target, state, scroll, detail] { view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
+        target.font = .systemFont(ofSize: 13, weight: .semibold); state.font = .systemFont(ofSize: 11)
+        properties.string = "캡처 후 뷰를 선택하면 클래스·부모·형제 순서·제공된 속성을 확인할 수 있습니다."
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    func setContext(_ value: String) { guard context != value else { return }; context = value; target.stringValue = value + " · 전면 앱" }
+    func setAvailability(_ allowed: Bool, reason: String) { capture.isEnabled = allowed; if !allowed { state.stringValue = reason } }
+    func focusTree() { window?.makeFirstResponder(tree) }
+    func beginCapture() { capture.isEnabled = false; invalidate(); state.stringValue = "뷰 구조 캡처 중 · 앱이 잠시 멈출 수 있습니다…" }
+    func invalidate() {
+        isStale = true
+        if snapshot != nil { state.stringValue = "이전 캡처 · 현재 화면과 다를 수 있습니다. 새 캡처로 확인하세요." }
+    }
+    func finishCapture(_ snapshot: [String: Any]?, error: String?) {
+        guard let snapshot, let data = snapshot["roots"] as? [[String: Any]] else {
+            state.stringValue = "캡처 실패 · " + (error ?? "유효한 뷰 구조 응답이 없습니다."); return
+        }
+        self.snapshot = snapshot; roots = data.map(Node.init); isStale = false
+        target.stringValue = context + " · pid " + String(describing: snapshot["pid"] ?? "?")
+        state.stringValue = (snapshot["capturedAt"] as? String ?? "캡처 시점 미제공") + " · " + (roots.isEmpty ? "캡처한 창이 없습니다." : "캡처 당시 구조 · 현재 화면과 다를 수 있습니다.")
+        tree.reloadData(); tree.expandItem(nil, expandChildren: false)
+        properties.string = "뷰를 선택하세요. 화면 좌표 변환이 제공되지 않은 뷰는 LCD 강조를 표시하지 않습니다."
+    }
+    func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int { (item as? Node)?.children.count ?? roots.count }
+    func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool { !(item as! Node).children.isEmpty }
+    func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any { ((item as? Node)?.children ?? roots)[index] }
+    func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
+        let row = (item as! Node).data
+        let label = NSTextField(labelWithString: (row["className"] as? String ?? "클래스 미제공") + " · " + (row["id"] as? String ?? "ID 미제공"))
+        label.font = .systemFont(ofSize: 12); return label
+    }
+    func outlineViewSelectionDidChange(_ notification: Notification) {
+        guard let node = tree.item(atRow: tree.selectedRow) as? Node else { return }
+        let row = node.data
+        func value(_ key: String) -> String { guard let value = row[key], !(value is NSNull) else { return "제공되지 않음" }; return String(describing: value) }
+        properties.string = "✓ " + value("className") + "\n캡처 내 ID: " + value("id") + "\n부모: " + value("parentID") + "\n형제 순서: " + value("siblingIndex")
+        properties.string += "\nframe (superview points): " + value("frame") + "\nhidden: " + value("hidden") + " · alpha: " + value("alpha")
+        properties.string += "\nAX ID: " + value("accessibilityIdentifier") + "\nAX label: " + value("accessibilityLabel")
+        properties.string += "\nLCD 강조 불가 · 화면 좌표와 transform이 확인되지 않았습니다." + (isStale ? "\n이전 캡처입니다." : "")
+        NSAccessibility.post(element: properties, notification: .valueChanged)
+    }
+    @objc private func captureViews() { onCapture() }
 }

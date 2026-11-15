@@ -276,6 +276,18 @@ let tools: [[String: Any]] = [
         ],
     ],
     [
+        "name": "device",
+        "description": "Physical iPhones only. Run list, then explicitly allow a single device by its UUID identifier; names are never accepted for selection. Agent input (tap, swipe, key, type, button) is injected into the device over CoreDevice HID and never uses the Mac's mouse, keyboard or window activation. Input is refused while the device requires a passcode: unlock it yourself, mac-cu never enters one. Landscape and unallowed devices are refused. Coordinates are portrait screen points from the top left, matching pixels in the resized screenshot. screenshot returns one still frame of the device screen and is allowed while locked. type assumes a US English hardware keyboard; unsupported characters are refused. Devices connected by USB cable or paired and reachable on the same network both work; list shows the transport. The user watches the live screen in Xcode's Device Hub: view opens Device Hub at the allowed device (without bringing it to the front unless focus is true); a physical device's screen starts only when the user clicks View Screen there. mac-cu never clicks in, controls or closes Device Hub. If CoreDevice cannot be used in process, screenshots fall back to devicectl (slower) and list says so.",
+        "inputSchema": ["type": "object", "required": ["action"], "properties": [
+            "action": ["type": "string", "enum": ["list", "allow", "release", "screenshot", "tap", "swipe", "key", "type", "button", "view"]],
+            "device": ["type": "string", "description": "Physical device UUID from list; required except list and release."],
+            "x": ["type": "number"], "y": ["type": "number"], "to_x": ["type": "number"], "to_y": ["type": "number"],
+            "seconds": ["type": "number"], "text": ["type": "string"], "key": ["type": "string"],
+            "button": ["type": "string", "enum": ["home", "lock", "side", "volumeUp", "volumeDown"]],
+            "focus": ["type": "boolean", "description": "view: bring Device Hub to the front (default false)."],
+        ]],
+    ],
+    [
         "name": "simulator",
         "description": """
             Operate a booted iOS Simulator (Xcode 27 or later) with HID events, in the background: tap, swipe, gesture, \
@@ -453,8 +465,11 @@ func noScreenshot(_ other: String) -> String { requestScreenRecording() ? other 
 func callTool(_ name: String, _ arguments: [String: Any]) -> [String: Any] {
     // The simulator tool sends HID events to the simulator, and webinspector uses Web Inspector sockets:
     // they need no Accessibility permission.
-    if name == "simulator" || name == "webinspector" {
-        do { return try name == "simulator" ? simulatorTool(arguments) : webInspectorTool(arguments) } catch let error as ToolError {
+    if name == "simulator" || name == "webinspector" || name == "device" {
+        do {
+            if name == "device" { return try deviceTool(arguments) }
+            return try name == "simulator" ? simulatorTool(arguments) : webInspectorTool(arguments)
+        } catch let error as ToolError {
             return ["content": [["type": "text", "text": error.message]], "isError": true]
         } catch {
             return ["content": [["type": "text", "text": "\(error)"]], "isError": true]

@@ -19,6 +19,8 @@ let vendorService = "com.apple.coredevice.feature.remote.hid.vendordefined"
 final class HIDLink {
     let deviceID: String
     let connection: xpc_connection_t
+    private let transmit: (xpc_object_t) -> Bool
+    private let simulatorOverlay: Bool
     let size: CGSize  // The screen in points.
     private let statusLock = NSLock()
     private var isClosed = false
@@ -27,11 +29,42 @@ final class HIDLink {
         set { statusLock.lock(); defer { statusLock.unlock() }; isClosed = newValue }
     }
 
-    init(connection: xpc_connection_t, size: CGSize, deviceID: String) {
+    init(connection: xpc_connection_t, size: CGSize, deviceID: String, send: ((xpc_object_t) -> Bool)? = nil) {
         self.connection = connection
         self.size = size
         self.deviceID = deviceID
+        self.simulatorOverlay = true
+        self.transmit = send ?? { message in
+            xpc_connection_send_message(connection, message)
+            let done = DispatchSemaphore(value: 0)
+            xpc_connection_send_barrier(connection) { done.signal() }
+            return done.wait(timeout: .now() + 2) == .success
+        }
     }
+
+    // The caller retains the CoreDevice peers and supplies the RemoteXPC sender (routing by the message's
+    // featureIdentifier) and, optionally, the delivery barrier.
+    init(externalConnection connection: xpc_object_t, size: CGSize, deviceID: String,
+         send: @escaping (xpc_object_t, xpc_object_t) -> Bool, drain: ((Set<String>) -> Drain)? = nil) {
+        self.connection = connection
+        self.size = size
+        self.deviceID = deviceID
+        self.simulatorOverlay = false
+        self.transmit = { send(connection, $0) }
+        self.externalDrain = drain
+    }
+
+    /// Physical devices: which features' barriers the device answered after the last event, and why the others are
+    /// unconfirmed (no answer in time, an error, or no barrier on that path).
+    struct Drain {
+        var acknowledged: Set<String> = []
+        var unconfirmed: [String: String] = [:]
+        var seconds: Double = 0
+    }
+    private var externalDrain: ((Set<String>) -> Drain)?
+    /// Waits for the device to take the events sent so far on these features; nil when this link has no barrier
+    /// (the simulator, whose sends already wait for dtuhidd).
+    func drain(_ features: Set<String>) -> Drain? { externalDrain?(features) }
 
     @discardableResult
     func send(_ type: String, _ payload: xpc_object_t, feature: String = hidService) -> Bool {
@@ -41,10 +74,7 @@ final class HIDLink {
         xpc_dictionary_set_bool(message, "isBarrier", false)
         xpc_dictionary_set_string(message, "featureIdentifier", feature)
         xpc_dictionary_set_value(message, "payload", payload)
-        xpc_connection_send_message(connection, message)
-        let done = DispatchSemaphore(value: 0)
-        xpc_connection_send_barrier(connection) { done.signal() }
-        return done.wait(timeout: .now() + 2) == .success && !closed
+        return transmit(message) && !closed
     }
 
     /// A USB HID keyboard usage (page 7).
@@ -56,12 +86,16 @@ final class HIDLink {
         usleep(15_000)
     }
 
-    func button(page: UInt64, usage: UInt64, down: Bool) {
+    /// feature: the simulator's dtuhidd takes buttons on the digitizer feature. A physical device (iPhone 14 Pro, iOS 27.2,
+    /// 2026-11-14) took volume on CoreDevice's button feature (com.apple.coredevice.feature.remote.hid.button) and
+    /// Home only on the digitizer feature; the caller picks.
+    @discardableResult
+    func button(page: UInt64, usage: UInt64, down: Bool, feature: String = hidService) -> Bool {
         let payload = xpc_dictionary_create(nil, nil, 0)
         xpc_dictionary_set_uint64(payload, "usagePage", page)
         xpc_dictionary_set_uint64(payload, "usageCode", usage)
         xpc_dictionary_set_uint64(payload, "state", down ? 1 : 2)
-        send("IndigoButtonEvent", payload)
+        return send("IndigoButtonEvent", payload, feature: feature)
     }
 
     /// Touchscreens that have had their first event.
@@ -89,7 +123,7 @@ final class HIDLink {
             send("IndigoDigitizerEvent", payload)
         }
         // dtuhidd drops the first touches to a touchscreen it has not set up; an end with no contact sets it up (idb waits 400 ms).
-        if target != 0, !warmed.contains(target) {
+        if simulatorOverlay, target != 0, !warmed.contains(target) {
             event(2)
             usleep(400_000)
             warmed.insert(target)
@@ -97,7 +131,7 @@ final class HIDLink {
         event(phase)
         var contacts = [GestureContact(id: 1, point: point, touching: phase != 2)]
         if let second { contacts.append(GestureContact(id: 2, point: second, touching: phase != 2)) }
-        showSimulatorTouches(deviceID, contacts: contacts, screen: screen)
+        if simulatorOverlay { showSimulatorTouches(deviceID, contacts: contacts, screen: screen) }
     }
 
     /// A control of a foldable device (Device Hub's hinge slider and orientation picker): a vendor-defined HID event
@@ -665,7 +699,12 @@ func shell(_ path: String, _ arguments: [String], timeout: Double = 15) -> Shell
     process.standardError = pipe
     process.standardInput = FileHandle.nullDevice  // Not mac-cu's stdin: that is the MCP channel.
     guard (try? process.run()) != nil else { return ShellResult(status: -1, output: "") }
-    let timer = DispatchWorkItem { if process.isRunning { process.terminate() } }
+    let timer = DispatchWorkItem {
+        guard process.isRunning else { return }
+        process.terminate()
+        // A child that ignores SIGTERM must not hold the serial request queue forever.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) { if process.isRunning { kill(process.processIdentifier, SIGKILL) } }
+    }
     DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: timer)
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
@@ -745,6 +784,15 @@ func simulatorTool(_ arguments: [String: Any]) throws -> [String: Any] {
         }
         return text(lines.isEmpty ? "No simulator is booted." : "Booted simulators (name | UDID | runtime | screen):\n" + lines.joined(separator: "\n"))
     }
+    if ["axSnapshot", "axAction"].contains(action) {
+        guard let explicitDevice = arguments["device"] as? String, UUID(uuidString: explicitDevice) != nil else {
+            throw ToolError("Typed AX commands require an explicit device UDID")
+        }
+        if action == "axAction" {
+            guard let wire = arguments["ax"] as? [String: Any] else { throw SimulatorAXWireError.invalidEnvelope }
+            _ = try SimulatorAXEnvelope(wire)
+        }
+    }
     try approve("Simulator", bundleID: "com.apple.iphonesimulator")
     let device = try bootedDevice(arguments["device"] as? String ?? "")
     let activity = SimulatorToolActivity(arguments: arguments, source: "에이전트 · \(currentSession?.agent ?? "mac-cu")",
@@ -757,9 +805,11 @@ func executeSimulatorCommand(_ arguments: [String: Any], device: NSObject, activ
     let id = udid(of: device)
     let window = DispatchQueue.main.sync { simulatorWindows[id] }
     // Mutations revoke operation observations; synchronous screen reads also supersede older display samples.
-    let mutation = ["rotate", "button", "gesture", "tap", "swipe", "press", "key", "type", "paste", "crown"].contains(activity.action)
-        || (activity.action == "hinge" && (arguments["degrees"] != nil || arguments["state"] != nil))
-    if mutation { invalidateSimulatorObservation(id) }
+    let mutation = activity.mutatesDevice
+    if mutation {
+        invalidateSimulatorObservation(id)
+        SimulatorInspectionHost.invalidate(deviceID: id)
+    }
     DispatchQueue.main.async { [weak window] in window?.commandStarted(activity) }
     do {
         let poseChange = activity.action == "rotate" || (activity.action == "hinge" && mutation)
@@ -790,6 +840,17 @@ private func simulatorDeviceTool(_ arguments: [String: Any], device: NSObject) t
     let snapshotStarted = ProcessInfo.processInfo.systemUptime
     let raw = simulatorCommandNeedsActiveScreen(action) ? displays(of: id) : nil
     let screen = try simulatorCommandNeedsActiveScreen(action) ? activeScreen(of: device, readback: raw) : nil
+    func inspectionScope() -> [String: Any] {
+        let size = screen?.points ?? screenSize(of: device)
+        return ["device": id, "screen": screen?.id ?? "main", "rotation": screen?.rotation ?? "rot0",
+                "guestRotation": screen?.guestRotation ?? "rot0", "width": size.width, "height": size.height]
+    }
+    if ["tap", "press"].contains(action), arguments["inspectionElement"] != nil {
+        guard let scope = arguments["inspectionScope"] as? [String: Any],
+              NSDictionary(dictionary: inspectionScope()).isEqual(to: scope) else {
+            throw ToolError("선택한 기기 화면이나 방향이 바뀌었습니다. 화면 요소를 새로 읽으세요.")
+        }
+    }
     if action == "screenshot" {
         let size = screen?.points ?? screenSize(of: device)
         let name = device.value(forKey: "name") ?? id
@@ -825,10 +886,42 @@ private func simulatorDeviceTool(_ arguments: [String: Any], device: NSObject) t
         }
         return ["content": content + guideList]
     }
+    if action == "axSnapshot" {
+        _ = try SimulatorInspectionHost.prepare(device: device, screen: screen)
+        let snapshot = try simulatorAXHostSnapshot(device, deviceID: id, screen: screen)
+        let target = snapshot["target"] as? [String: Any] ?? [:]
+        return ["content": [["type": "text", "text": "AX snapshot captured; guest operations require qualification"]],
+                "structuredContent": ["inspection": ["pid": target["pid"] ?? 0, "elements": snapshot["nodes"] ?? [],
+                    "scope": inspectionScope(), "axSnapshot": snapshot]]]
+    }
+    if action == "axAction" {
+        _ = try SimulatorInspectionHost.prepare(device: device, screen: screen)
+        guard let envelope = arguments["ax"] as? [String: Any] else { throw SimulatorAXWireError.invalidEnvelope }
+        let result = try simulatorAXHostAction(envelope, deviceID: id)
+        return ["content": [["type": "text", "text": "AX: \(result["state"] ?? "unknown") · \(result["delivery"] ?? "unknown")"]],
+                "structuredContent": ["axResult": result, "axBinding": ["captureID": envelope["captureID"] ?? "", "nodeID": envelope["nodeID"] ?? ""]]]
+    }
     let target = arguments["target"] as? String ?? ""
     let timeout = (arguments["timeout"] as? NSNumber)?.doubleValue
+    if action == "describe", arguments["inspection"] as? Bool == true {
+        let pid = try simulatorFrontPid(device)
+        var hitTestSelectorAvailable = false
+        let elements = try simulatorElements(device, screen: screen) { _, objects in
+            hitTestSelectorAvailable = objects.first?.responds(to: NSSelectorFromString("accessibilityHitTest:")) ?? false
+        }
+        guard try simulatorFrontPid(device) == pid else { throw ToolError("조회 중 전면 앱이 바뀌었습니다. 다시 읽으세요.") }
+        return ["content": [["type": "text", "text": "화면 요소 \(elements.count)개를 읽었습니다."]],
+                "structuredContent": ["inspection": ["pid": Int(pid), "app": processName(pid),
+                    "elements": elements.map(\.inspectionData), "scope": inspectionScope(), "selectionMethod": "normalized AX frame candidates",
+                    "hitTestSelectorAvailable": hitTestSelectorAvailable]]]
+    }
     if action == "describe" {
         return text(try describeSimulator(device, screen: screen, query: arguments["query"] as? String ?? ""))
+    }
+    if action == "press", let selected = arguments["inspectionElement"] as? [String: Any],
+       let pid = arguments["inspectionPid"] as? Int {
+        try pressSimulatorInspectionElement(device, screen: screen, selected: selected, pid: pid)
+        return text("선택한 요소의 접근성 실행(AXPress)을 완료했습니다. 터치는 보내지 않았습니다.")
     }
     if action == "press" {
         guard !target.isEmpty else { throw ToolError("press needs target: a label, id or value.") }
@@ -942,7 +1035,11 @@ private func simulatorDeviceTool(_ arguments: [String: Any], device: NSObject) t
             pid = line.flatMap { Int32($0.split(separator: "\t").first ?? "") } ?? 0
             guard pid > 0 else { throw ToolError("\(bundle) is not running in the simulator. Launch it first.") }
         }
-        return text(try simulatorViews(pid: pid, query: arguments["query"] as? String ?? ""))
+        let capture = try simulatorViews(pid: pid, deviceID: id, query: arguments["query"] as? String ?? "")
+        var result = text(capture.content["text"] as? String ?? capture.content["message"] as? String ?? "UIKit capture unavailable.")
+        result["structuredContent"] = ["viewCapture": capture.content]
+        result["isError"] = capture.status != .success
+        return result
     }
     let link = try hidLink(for: device)
     let seconds = (arguments["seconds"] as? NSNumber)?.doubleValue
@@ -950,7 +1047,19 @@ private func simulatorDeviceTool(_ arguments: [String: Any], device: NSObject) t
     case "tap":
         var at: CGPoint
         var note = ""
-        if arguments["x"] == nil, !target.isEmpty {
+        if let selected = arguments["inspectionElement"] as? [String: Any] {
+            guard let expectedPid = arguments["inspectionPid"] as? Int,
+                  Int(try simulatorFrontPid(device)) == expectedPid else {
+                throw ToolError("전면 앱이 바뀌었습니다. 화면 요소를 새로 읽으세요.")
+            }
+            let matches = try simulatorElements(device, screen: screen).filter { NSDictionary(dictionary: $0.inspectionData).isEqual(to: simulatorAXLegacyRow(selected)) }
+            guard matches.count == 1, let found = matches.first,
+                  found.inside, found.enabled != false, found.frame.width > 0, found.frame.height > 0 else {
+                throw ToolError("선택 이후 화면 요소가 바뀌었거나 대상을 구분할 수 없습니다. 화면 요소를 새로 읽고 다시 선택하세요.")
+            }
+            at = found.center
+            note = " (선택한 요소: \(found.line))"
+        } else if arguments["x"] == nil, !target.isEmpty {
             let (found, matches) = try waitForSimulatorElement(device, screen: screen, target: target, seconds: min(max(timeout ?? 5, 0), 60))
             at = found.center
             note = " (\(found.line)\(matches.count > 1 ? "; \(matches.count) elements match, this is the first (wholly on screen first, then tree order)" : ""))"
