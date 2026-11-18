@@ -221,7 +221,7 @@ extension PhysicalHIDLink {
         }
         return .acknowledged
     }
-    private static let replyQueue = DispatchQueue(label: "mac-cu.device.barrier")
+    private static let replyQueue = DispatchQueue(label: "mac-cu.device.barrier", autoreleaseFrequency: .workItem)
     /// HIDXPCService's barrier: a dictionary with only `isBarrier` (CoreDevice 651.31, see docs/design/device-hub-connection-analysis.md).
     static func barrierMessage() -> xpc_object_t {
         let message = xpc_dictionary_create(nil, nil, 0)

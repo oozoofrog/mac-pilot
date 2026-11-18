@@ -54,7 +54,7 @@ final class SimulatorInspectorCoordinator {
     init(owner: SimulatorWindow, backend: SimulatorInspectorBackend = SimulatorInspectorBackend()) {
         precondition(Thread.isMainThread)
         self.owner = owner; self.backend = backend
-        let queue = Self.queues[owner.id] ?? DispatchQueue(label: "mac-cu.inspector.\(owner.id)", qos: .userInitiated)
+        let queue = Self.queues[owner.id] ?? DispatchQueue(label: "mac-cu.inspector.\(owner.id)", qos: .userInitiated, autoreleaseFrequency: .workItem)
         Self.queues[owner.id] = queue; work = queue
     }
 

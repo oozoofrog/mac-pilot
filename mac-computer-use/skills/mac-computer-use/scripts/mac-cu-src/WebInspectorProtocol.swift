@@ -40,10 +40,12 @@ final class RWIClient {
         Thread.detachNewThread { [self] in
             do {
                 while true {
-                    let frame = try stream.readFrame()
-                    guard let m = try PropertyListSerialization.propertyList(from: frame, format: nil) as? [String: Any],
-                          let sel = m["__selector"] as? String else { continue }
-                    handle(sel, m["__argument"] as? [String: Any] ?? [:])
+                    try autoreleasepool {
+                        let frame = try stream.readFrame()
+                        guard let m = try PropertyListSerialization.propertyList(from: frame, format: nil) as? [String: Any],
+                              let sel = m["__selector"] as? String else { return }
+                        handle(sel, m["__argument"] as? [String: Any] ?? [:])
+                    }
                 }
             } catch {}
             cond.lock(); closed = true; cond.broadcast(); cond.unlock()

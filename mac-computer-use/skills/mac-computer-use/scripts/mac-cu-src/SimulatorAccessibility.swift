@@ -56,7 +56,7 @@ private enum SAXLiveEvidence {
     static var dispatches = 0
 }
 #endif
-private let accessibilityCompletionQueue = DispatchQueue(label: "mac-cu.simulator-ax.completion")
+private let accessibilityCompletionQueue = DispatchQueue(label: "mac-cu.simulator-ax.completion", autoreleaseFrequency: .workItem)
 
 final class SimulatorAccessibilityBridge: NSObject {
     private struct Registration { let device: NSObject; var budget: SimulatorAXBudget }

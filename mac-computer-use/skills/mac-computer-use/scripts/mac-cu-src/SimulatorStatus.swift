@@ -4,7 +4,7 @@
 
 import AppKit
 
-struct SimulatorStatus {
+struct SimulatorStatus: Equatable {
     let name: String
     let udid: String
     let runtime: String
@@ -50,30 +50,49 @@ func collectSimulatorStatus() -> [SimulatorStatus] {
     }.sorted { $0.name < $1.name }
 }
 
-/// The latest status, refreshed every 5 seconds in the background so the menu opens at once.
+/// The latest status. Each read starts one devicectl per booted simulator, so the board reads every 5 seconds only
+/// while something shows it (an LCD window, the status or management window, the open menu) and once a minute
+/// otherwise; opening the menu or a window asks for a read at once.
 final class SimulatorStatusBoard {
     static let shared = SimulatorStatusBoard()
+    static let idleInterval: TimeInterval = 60
     private let lock = NSLock()
     private var latest: [SimulatorStatus] = []
     private var updated = Date.distantPast
+    private var lastRead: TimeInterval = -.infinity
     private var timer: DispatchSourceTimer?
+    private let queue = DispatchQueue(label: "mac-cu.simulator-status", qos: .utility, autoreleaseFrequency: .workItem)
     var onChange: (() -> Void)?
+    /// Main thread: true while a window or the menu shows the board.
+    var isShown: () -> Bool = { true }
 
     var statuses: [SimulatorStatus] { lock.lock(); defer { lock.unlock() }; return latest }
     var updatedAt: Date { lock.lock(); defer { lock.unlock() }; return updated }
 
+    /// Whether a tick reads now: always while shown, else only after idleInterval.
+    static func shouldRead(shown: Bool, sinceLastRead: TimeInterval) -> Bool { shown || sinceLastRead >= idleInterval }
+
     func start() {
         guard timer == nil else { return }
-        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
-        timer.schedule(deadline: .now(), repeating: 5)
-        timer.setEventHandler { [weak self] in
-            let now = collectSimulatorStatus()
-            guard let self else { return }
-            self.lock.lock(); self.latest = now; self.updated = Date(); self.lock.unlock()
-            DispatchQueue.main.async { self.onChange?() }
-        }
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now(), repeating: 5, leeway: .seconds(1))
+        timer.setEventHandler { [weak self] in self?.tick(force: false) }
         timer.resume()
         self.timer = timer
+    }
+
+    /// Reads now, off the caller's thread (the menu or a window was just opened).
+    func refresh() { queue.async { [weak self] in self?.tick(force: true) } }
+
+    private func tick(force: Bool) {
+        let shown = DispatchQueue.main.sync { isShown() }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard force || Self.shouldRead(shown: shown, sinceLastRead: now - lastRead) else { return }
+        lastRead = now
+        let read = collectSimulatorStatus()
+        lock.lock(); let changed = read != latest; latest = read; updated = Date(); lock.unlock()
+        // The status window shows the time of the read; everything else only needs a change.
+        if changed || shown { DispatchQueue.main.async { self.onChange?() } }
     }
 }
 
@@ -103,7 +122,10 @@ final class SimulatorStatusWindow: NSObject {
         }
         panel?.orderFrontRegardless()
         redraw()
+        SimulatorStatusBoard.shared.refresh()
     }
+
+    var isVisible: Bool { panel?.isVisible == true }
 
     func redraw() {
         guard let panel, panel.isVisible, let textView else { return }  // A hidden window is drawn when it is shown.
@@ -116,6 +138,6 @@ final class SimulatorStatusWindow: NSObject {
                 "\n  \(status.udid)"
         }
         textView.string = (rows.isEmpty ? "부팅된 시뮬레이터가 없습니다." : rows.joined(separator: "\n\n")) +
-            "\n\n\(time)에 읽음 · 5초마다 새로 읽습니다. 다른 세션이 쓰는 기기는 끄거나 접기 전에 그 세션에 물어보세요."
+            "\n\n\(time)에 읽음 · 이 창이 열려 있는 동안 5초마다 새로 읽습니다. 다른 세션이 쓰는 기기는 끄거나 접기 전에 그 세션에 물어보세요."
     }
 }

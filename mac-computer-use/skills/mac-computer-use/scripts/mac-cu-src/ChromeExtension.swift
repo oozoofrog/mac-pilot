@@ -39,9 +39,21 @@ func readLines(_ fd: Int32, _ each: (Data) -> Bool) {
         while let newline = buffer.firstIndex(of: 0x0a) {
             let line = Data(buffer[buffer.startIndex..<newline])
             buffer.removeSubrange(buffer.startIndex...newline)
-            if !each(line) { return }
+            // These threads live as long as their connection: without a pool per line nothing they autorelease is freed.
+            if !autoreleasepool(invoking: { each(line) }) { return }
         }
+        // A long line (a reply with a picture) must not leave its capacity behind for the life of the connection.
+        if buffer.isEmpty { buffer = Data() }
     }
+}
+
+/// The next client of a listening socket, or nil after a failure. A failure that stays (no file descriptors left)
+/// waits before the caller tries again, so the accept loop cannot take a whole core.
+func acceptClient(_ server: Int32) -> Int32? {
+    let client = accept(server, nil, nil)
+    if client >= 0 { return client }
+    if errno != EINTR && errno != ECONNABORTED { usleep(200_000) }
+    return nil
 }
 
 func writeAll(_ fd: Int32, _ data: Data) -> Bool {
@@ -111,8 +123,7 @@ func runNativeHost() -> Never {
     let routes = HostRoutes()
     Thread.detachNewThread {
         while true {
-            let client = accept(server, nil, nil)
-            guard client >= 0 else { continue }
+            guard let client = acceptClient(server) else { continue }
             Thread.detachNewThread {
                 if let peer = refusal(of: client, host: host) {
                     // One answer, so that the caller sees why; then the door closes.
@@ -148,15 +159,19 @@ func runNativeHost() -> Never {
     }
     let input = FileHandle.standardInput
     while true {
-        let header = input.readData(ofLength: 4)
-        guard header.count == 4 else { break }
-        let length = header.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian
-        let message = input.readData(ofLength: Int(length))
-        guard let id = (try? JSONSerialization.jsonObject(with: message) as? [String: Any])?["id"] as? String else { continue }
-        routes.lock.lock()
-        let client = routes.waiting.removeValue(forKey: id)
-        routes.lock.unlock()
-        if let client { _ = writeAll(client, message + Data([0x0a])) }
+        let more: Bool = autoreleasepool {
+            let header = input.readData(ofLength: 4)
+            guard header.count == 4 else { return false }
+            let length = header.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian
+            let message = input.readData(ofLength: Int(length))
+            guard let id = (try? JSONSerialization.jsonObject(with: message) as? [String: Any])?["id"] as? String else { return true }
+            routes.lock.lock()
+            let client = routes.waiting.removeValue(forKey: id)
+            routes.lock.unlock()
+            if let client { _ = writeAll(client, message + Data([0x0a])) }
+            return true
+        }
+        if !more { break }
     }
     unlink(extensionSocket.path)
     exit(0)

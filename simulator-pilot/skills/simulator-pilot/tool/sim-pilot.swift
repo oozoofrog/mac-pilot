@@ -14,6 +14,12 @@
 //   sim-pilot release --udid U [--force]                기록을 지운다
 //   sim-pilot status                                    부팅된 기기마다 켜진 화면·방향과 사용 기록 (JSON, mac-cu 메뉴 막대와 같은 내용)
 //   sim-pilot claims                                    기기별 사용 기록 (JSON, 꺼진 기기·끝난 세션은 지운다)
+//   sim-pilot budget [--would-boot [--udid U] [--set default|previews]]
+//                                                       동시에 켤 수 있는 대수, 켜진 기기와 쓰는 쪽 (JSON). --would-boot는 하나 더 켜도
+//                                                       되는지 답한다: 되면 종료 코드 0, 꽉 찼으면 3
+//   sim-pilot acquire (--udid U | --name N) [--note 하는 일] [--wait 초] [--force]
+//                                                       기기를 쓴다: 켜져 있으면 그대로, 꺼져 있고 자리가 있으면 켜고 사용 기록을 남긴다.
+//                                                       꽉 찼으면 3, 다른 세션이 쓰는 기기면 4
 //   sim-pilot caps --udid U                             이 기기에서 되는 기기 동작(L1) 표 (capabilities와 화면 수로)
 //   sim-pilot photos --udid U [--count N] [--width W] [--height H] [--seed S] [--grayscale] [--blur 1-10] [--yes]
 //                                                       picsum.photos 사진을 사진 앱에 넣는다
@@ -22,7 +28,7 @@
 
 import Foundation
 
-let version = "1.4.0"
+let version = "1.5.0"
 
 let schemes: [(name: String, bundle: String)] = [
     ("Inhouse(iTeam)-Debug", "com.kakao.iPart.Talk"),
@@ -321,6 +327,470 @@ func releaseCommand(_ options: Options) {
     print("기록을 지웠습니다.")
 }
 
+// MARK: - 동시에 켜는 대수 제한
+//
+// 켜진 시뮬레이터는 한 대에 메모리 약 2GiB를 쓰고, 넘치는 만큼은 시동 디스크의 스왑으로 간다. 제한은
+// ~/Library/Application Support/sim-pilot/budget.json(mac-cu 메뉴 막대에서 바꾼다)에서 읽고, 없으면 메모리와 디스크에 맞춘다.
+// 아래 구간은 mac-computer-use의 mac-cu-src/SimulatorBudget.swift와 같은 글이다(scripts/tests가 다르면 실패한다).
+
+// BEGIN simulator-budget-core
+
+/// A JSON number, not true or false (which bridge to 1 and 0).
+func budgetInteger(_ value: Any?) -> Int? {
+    guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+    return number.intValue
+}
+
+/// The user's settings: ~/Library/Application Support/sim-pilot/budget.json.
+/// {"schemaVersion": 1, "limit": "auto" | <total>, "autoShutdown": {"enabled": true, "idleMinutes": 15}}
+struct SimulatorBudgetConfig: Equatable {
+    /// nil: the limit follows this Mac's memory and free disk space.
+    var manualTotal: Int?
+    var autoShutdown = false
+    var idleMinutes = 15
+
+    static let maximumTotal = 12
+    static var fileURL: URL {
+        if let path = ProcessInfo.processInfo.environment["SIM_PILOT_BUDGET_FILE"], !path.isEmpty { return URL(fileURLWithPath: path) }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/sim-pilot/budget.json")
+    }
+
+    /// A missing or unreadable file is the automatic limit without automatic shutdown.
+    static func parse(_ data: Data?) -> SimulatorBudgetConfig {
+        var config = SimulatorBudgetConfig()
+        guard let data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return config }
+        if let total = budgetInteger(json["limit"]) { config.manualTotal = min(max(total, 1), maximumTotal) }
+        if let shutdown = json["autoShutdown"] as? [String: Any] {
+            config.autoShutdown = shutdown["enabled"] as? Bool ?? false
+            if let minutes = budgetInteger(shutdown["idleMinutes"]) { config.idleMinutes = min(max(minutes, 1), 24 * 60) }
+        }
+        return config
+    }
+
+    static func load() -> SimulatorBudgetConfig { parse(try? Data(contentsOf: fileURL)) }
+
+    var encoded: Data {
+        let json: [String: Any] = ["schemaVersion": 1, "limit": manualTotal.map { $0 as Any } ?? "auto",
+                                   "autoShutdown": ["enabled": autoShutdown, "idleMinutes": idleMinutes]]
+        return (try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])) ?? Data()
+    }
+
+    func save() throws {
+        let file = Self.fileURL
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try encoded.write(to: file, options: .atomic)
+    }
+}
+
+struct SimulatorBudgetLimits: Equatable {
+    /// Booted simulators in every device set together.
+    let total: Int
+    /// Booted simulators in the default set: one place stays free for an Xcode Previews device.
+    let defaultSet: Int
+    let automatic: Bool
+    let memoryGiB: Int
+    /// nil when the free space could not be read.
+    let freeDiskGiB: Int?
+    /// What the automatic limit is, also while a manual one applies (the settings show it).
+    let automaticTotal: Int
+}
+
+/// The automatic limit: one simulator for each 8 GiB of memory (a booted iOS simulator held about 2 GiB here, and
+/// what does not fit goes to swap on the startup disk), and fewer when that disk is short: under 30 GiB free two,
+/// under 15 GiB one.
+func simulatorBudgetLimits(_ config: SimulatorBudgetConfig, memoryBytes: UInt64, freeDiskBytes: Int64?) -> SimulatorBudgetLimits {
+    let gibibyte: UInt64 = 1 << 30
+    let memory = Int((memoryBytes + gibibyte / 2) / gibibyte)
+    let disk = freeDiskBytes.map { Int(max($0, 0) / Int64(gibibyte)) }
+    var automatic = max(1, memory / 8)
+    if let disk { automatic = min(automatic, disk < 15 ? 1 : disk < 30 ? 2 : Int.max) }
+    automatic = min(automatic, SimulatorBudgetConfig.maximumTotal)
+    let total = config.manualTotal ?? automatic
+    return SimulatorBudgetLimits(total: total, defaultSet: max(1, total - 1), automatic: config.manualTotal == nil,
+                                 memoryGiB: memory, freeDiskGiB: disk, automaticTotal: automatic)
+}
+
+/// Free space of the volume that holds the swap files (the data volume of the startup disk).
+func simulatorBudgetFreeDiskBytes() -> Int64? {
+    var info = statfs()
+    guard statfs("/System/Volumes/Data", &info) == 0 else { return nil }
+    return Int64(info.f_bavail) * Int64(info.f_bsize)
+}
+
+func currentSimulatorBudgetLimits(_ config: SimulatorBudgetConfig = .load()) -> SimulatorBudgetLimits {
+    simulatorBudgetLimits(config, memoryBytes: ProcessInfo.processInfo.physicalMemory, freeDiskBytes: simulatorBudgetFreeDiskBytes())
+}
+
+struct BudgetSimulator: Equatable {
+    let udid: String
+    let name: String
+    let runtime: String
+    /// In the Xcode Previews device set, which Xcode boots by itself.
+    let previews: Bool
+}
+
+struct BudgetProcess: Equatable {
+    let pid: Int32
+    let parent: Int32
+    let command: String
+
+    /// The file name of the executable ("xcodebuild"). A path with a space gives its part before the space.
+    var name: String {
+        let executable = command.split(separator: " ", maxSplits: 1).first.map(String.init) ?? ""
+        return executable.split(separator: "/").last.map(String.init) ?? executable
+    }
+}
+
+/// Lines of `ps -axww -o pid=,ppid=,command=`.
+func parseBudgetProcesses(_ text: String) -> [BudgetProcess] {
+    text.split(separator: "\n").compactMap { line in
+        let parts = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+        guard parts.count == 3, let pid = Int32(parts[0]), let parent = Int32(parts[1]) else { return nil }
+        return BudgetProcess(pid: pid, parent: parent, command: String(parts[2]))
+    }
+}
+
+func readBudgetProcesses() -> [BudgetProcess] {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/ps")
+    process.arguments = ["-axww", "-o", "pid=,ppid=,command="]
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = FileHandle.nullDevice
+    guard (try? process.run()) != nil else { return [] }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    return parseBudgetProcesses(String(decoding: data, as: UTF8.self))
+}
+
+struct SimulatorOwner: Equatable {
+    /// "sim-pilot" (a claim), "agent-device" (a T3 Device panel session), "process" (a tool on the Mac that names the
+    /// device), "test-runner" (a UI test runner inside the device) or "lcd-window" (an open mac-cu window).
+    let kind: String
+    let by: String
+    let pid: Int32
+
+    var json: [String: Any] { ["kind": kind, "by": by, "pid": Int(pid)] }
+}
+
+/// What the process list says about each booted device: who uses it, and which apps run in it.
+struct SimulatorProcessUse: Equatable {
+    var owners: [SimulatorOwner] = []
+    /// Processes of installed apps in the device. A change means that somebody uses the device.
+    var apps: Set<Int32> = []
+}
+
+/// `ignoring`: processes whose mention of a device is not a use of it (this command and its callers, the daemon
+/// with the devicectl reads of its status board).
+func simulatorProcessUse(udids: [String], processes: [BudgetProcess], ignoring: Set<Int32>) -> [String: SimulatorProcessUse] {
+    let byPID = Dictionary(processes.map { ($0.pid, $0) }, uniquingKeysWith: { first, _ in first })
+    var roots: [Int32: String] = [:]  // launchd_sim → device
+    for process in processes where process.name == "launchd_sim" {
+        if let udid = udids.first(where: { process.command.range(of: $0, options: .caseInsensitive) != nil }) { roots[process.pid] = udid }
+    }
+    /// The device a process runs in, or whether one of `ignoring` started it.
+    func origin(_ process: BudgetProcess) -> (device: String?, ignored: Bool) {
+        var current = process, steps = 0
+        while steps < 64 {
+            if let udid = roots[current.pid] { return (udid, false) }
+            if ignoring.contains(current.pid) { return (nil, true) }
+            guard current.parent > 1, let parent = byPID[current.parent] else { return (nil, false) }
+            current = parent
+            steps += 1
+        }
+        return (nil, false)
+    }
+    var use = Dictionary(udids.map { ($0, SimulatorProcessUse()) }, uniquingKeysWith: { first, _ in first })
+    for process in processes where roots[process.pid] == nil {
+        let from = origin(process)
+        if let udid = from.device {
+            guard process.command.contains("/data/Containers/Bundle/Application/") else { continue }
+            use[udid]?.apps.insert(process.pid)
+            if process.command.contains("-Runner.app/") { use[udid]?.owners.append(SimulatorOwner(kind: "test-runner", by: process.name, pid: process.pid)) }
+        } else if !from.ignored {
+            // Reading a device's status is not using it.
+            if process.command.contains("devicectl device info ") { continue }
+            for udid in udids where process.command.range(of: udid, options: .caseInsensitive) != nil {
+                use[udid]?.owners.append(SimulatorOwner(kind: "process", by: process.name, pid: process.pid))
+            }
+        }
+    }
+    return use
+}
+
+/// A process and the processes that started it.
+func budgetProcessAncestors(of pid: Int32, in processes: [BudgetProcess]) -> Set<Int32> {
+    let byPID = Dictionary(processes.map { ($0.pid, $0) }, uniquingKeysWith: { first, _ in first })
+    var result: Set<Int32> = [pid], current = pid
+    while let process = byPID[current], process.parent > 1, !result.contains(process.parent) {
+        result.insert(process.parent)
+        current = process.parent
+    }
+    return result
+}
+
+/// When a process started, to tell it from a later process with the same number.
+func budgetProcessStart(_ pid: Int32) -> Date? {
+    var info = kinfo_proc(), size = MemoryLayout<kinfo_proc>.stride
+    var name: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+    guard sysctl(&name, 4, &info, &size, nil, 0) == 0, size > 0, info.kp_proc.p_pid == pid else { return nil }
+    let start = info.kp_proc.p_starttime
+    return Date(timeIntervalSince1970: TimeInterval(start.tv_sec) + TimeInterval(start.tv_usec) / 1_000_000)
+}
+
+/// The T3 Device panel's claims (~/.agent-device/device-claims/*.json), for owners that still run. The format belongs
+/// to agent-device: a file that does not parse gives no owner here, and `unreadable` counts it so that the caller
+/// does not take "no owner" as known.
+func agentDeviceOwners(files: [Data], start: (Int32) -> Date? = budgetProcessStart) -> (owners: [String: [SimulatorOwner]], unreadable: Int) {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = "EEE MMM d HH:mm:ss yyyy"
+    var owners: [String: [SimulatorOwner]] = [:], unreadable = 0
+    for data in files {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let device = json["device"] as? [String: Any], let udid = device["id"] as? String,
+              let pid = (json["ownerPid"] as? NSNumber)?.int32Value else { unreadable += 1; continue }
+        guard device["kind"] as? String ?? "simulator" == "simulator", let started = start(pid) else { continue }
+        // `ps -o lstart` text, whole seconds, local time. Without it the running process is taken as the owner.
+        if let text = json["ownerStartTime"] as? String,
+           let claimed = formatter.date(from: text.split(separator: " ").joined(separator: " ")),
+           abs(claimed.timeIntervalSince(started)) > 2 { continue }
+        let by = [json["session"] as? String, (json["workspace"] as? String).map { ($0 as NSString).lastPathComponent }]
+            .compactMap { $0 }.joined(separator: " · ")
+        owners[udid.uppercased(), default: []].append(SimulatorOwner(kind: "agent-device", by: by.isEmpty ? "agent-device" : by, pid: pid))
+    }
+    return (owners, unreadable)
+}
+
+func readAgentDeviceOwners() -> (owners: [String: [SimulatorOwner]], unreadable: Int) {
+    let folder = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".agent-device/device-claims")
+    let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
+    return agentDeviceOwners(files: files.filter { $0.pathExtension == "json" }.compactMap { try? Data(contentsOf: $0) })
+}
+
+struct SimulatorBudgetCount: Equatable {
+    let total: Int
+    let defaultSet: Int
+    let previews: Int
+
+    init(_ devices: [BudgetSimulator]) {
+        total = devices.count
+        previews = devices.filter(\.previews).count
+        defaultSet = total - previews
+    }
+
+    func isOver(_ limits: SimulatorBudgetLimits) -> Bool { total > limits.total || defaultSet > limits.defaultSet }
+    /// Whether one more device of that set fits.
+    func fits(_ limits: SimulatorBudgetLimits, previews: Bool) -> Bool {
+        total < limits.total && (previews || defaultSet < limits.defaultSet)
+    }
+    /// How many default-set devices must stop to come back inside the limits (Previews devices are Xcode's).
+    func excess(_ limits: SimulatorBudgetLimits) -> Int { min(defaultSet, max(total - limits.total, defaultSet - limits.defaultSet, 0)) }
+}
+
+/// Since when each default-set device has had no owner and no change of its apps. A device with an owner, a changed
+/// set of apps or a user at the Simulator app starts over.
+func simulatorIdleSince(previous: [String: Date], previousApps: [String: Set<Int32>], devices: [BudgetSimulator],
+                        owners: [String: [SimulatorOwner]], apps: [String: Set<Int32>], userActive: Bool, now: Date) -> [String: Date] {
+    var result: [String: Date] = [:]
+    for device in devices where !device.previews {
+        guard owners[device.udid, default: []].isEmpty else { continue }
+        let unchanged = !userActive && previousApps[device.udid] == apps[device.udid, default: []]
+        result[device.udid] = unchanged ? previous[device.udid] ?? now : now
+    }
+    return result
+}
+
+/// The devices to shut down now: only as many as the limits need, only default-set devices without an owner that
+/// have been idle for the whole time, the longest idle first.
+func simulatorShutdownCandidates(devices: [BudgetSimulator], owners: [String: [SimulatorOwner]], idleSince: [String: Date],
+                                 limits: SimulatorBudgetLimits, config: SimulatorBudgetConfig, now: Date) -> [BudgetSimulator] {
+    guard config.autoShutdown else { return [] }
+    let need = SimulatorBudgetCount(devices).excess(limits)
+    guard need > 0 else { return [] }
+    let idle = TimeInterval(config.idleMinutes * 60)
+    var idleDevices: [(device: BudgetSimulator, since: Date)] = []
+    for device in devices where !device.previews && owners[device.udid, default: []].isEmpty {
+        if let since = idleSince[device.udid], now.timeIntervalSince(since) >= idle { idleDevices.append((device, since)) }
+    }
+    idleDevices.sort { $0.since < $1.since || ($0.since == $1.since && $0.device.udid < $1.device.udid) }
+    return idleDevices.prefix(need).map(\.device)
+}
+
+// END simulator-budget-core
+
+/// Every device of a set with its state. The Previews set is Xcode's; a Mac without it has none.
+func simctlDevices(previews: Bool) -> [(device: BudgetSimulator, booted: Bool)] {
+    let result = run(["simctl"] + (previews ? ["--set", "previews"] : []) + ["list", "devices", "-j"])
+    guard result.status == 0, let json = try? JSONSerialization.jsonObject(with: Data(result.output.utf8)) as? [String: Any],
+          let byRuntime = json["devices"] as? [String: [[String: Any]]] else {
+        if previews { return [] }
+        fail("simctl이 시뮬레이터 목록을 주지 않았습니다: \(result.error)")
+    }
+    var devices: [(BudgetSimulator, Bool)] = []
+    for (runtime, list) in byRuntime {
+        let label = runtime.components(separatedBy: "SimRuntime.").last?.replacingOccurrences(of: "-", with: ".")
+            .replacingOccurrences(of: "iOS.", with: "iOS ") ?? runtime
+        for device in list where device["isAvailable"] as? Bool ?? true {
+            devices.append((BudgetSimulator(udid: (device["udid"] as? String ?? "").uppercased(), name: device["name"] as? String ?? "",
+                                            runtime: label, previews: previews), device["state"] as? String == "Booted"))
+        }
+    }
+    return devices.sorted { ($0.0.name, $0.0.runtime, $0.0.udid) < ($1.0.name, $1.0.runtime, $1.0.udid) }
+}
+
+struct BudgetState {
+    let config: SimulatorBudgetConfig
+    let limits: SimulatorBudgetLimits
+    /// Every device of both sets; `booted` are the ones that count.
+    let all: [(device: BudgetSimulator, booted: Bool)]
+    let booted: [BudgetSimulator]
+    let owners: [String: [SimulatorOwner]]
+    /// The devices this session uses: its claim, or a tool it started.
+    let mine: Set<String>
+    let unreadableClaims: Int
+    var count: SimulatorBudgetCount { SimulatorBudgetCount(booted) }
+}
+
+func budgetState() -> BudgetState {
+    let config = SimulatorBudgetConfig.load()
+    let all = simctlDevices(previews: false) + simctlDevices(previews: true)
+    let booted = all.filter(\.booted).map(\.device)
+    let me = currentSession()
+    let processes = readBudgetProcesses()
+    let use = simulatorProcessUse(udids: booted.map(\.udid), processes: processes,
+                                  ignoring: budgetProcessAncestors(of: getpid(), in: processes))
+    let agents = readAgentDeviceOwners()
+    var owners: [String: [SimulatorOwner]] = [:], mine: Set<String> = []
+    for (udid, claim) in loadClaims() {
+        owners[udid.uppercased(), default: []].append(SimulatorOwner(kind: "sim-pilot", by: claim.note.isEmpty ? claim.by : claim.note, pid: claim.pid))
+        if claim.by == me.by { mine.insert(udid.uppercased()) }
+    }
+    for device in booted {
+        owners[device.udid, default: []] += agents.owners[device.udid] ?? []
+        let tools = use[device.udid]?.owners ?? []
+        owners[device.udid, default: []] += tools
+        if tools.contains(where: { budgetProcessAncestors(of: $0.pid, in: processes).contains(me.pid) }) { mine.insert(device.udid) }
+    }
+    return BudgetState(config: config, limits: currentSimulatorBudgetLimits(config), all: all, booted: booted, owners: owners,
+                       mine: mine, unreadableClaims: agents.unreadable)
+}
+
+func budgetJSON(_ state: BudgetState) -> [String: Any] {
+    let count = state.count
+    var json: [String: Any] = [
+        "configured": FileManager.default.fileExists(atPath: SimulatorBudgetConfig.fileURL.path),
+        "limit": ["total": state.limits.total, "defaultSet": state.limits.defaultSet, "mode": state.limits.automatic ? "auto" : "manual",
+                  "automaticTotal": state.limits.automaticTotal, "memoryGiB": state.limits.memoryGiB,
+                  "freeDiskGiB": state.limits.freeDiskGiB.map { $0 as Any } ?? NSNull()] as [String: Any],
+        "autoShutdown": ["enabled": state.config.autoShutdown, "idleMinutes": state.config.idleMinutes] as [String: Any],
+        "booted": ["total": count.total, "defaultSet": count.defaultSet, "previews": count.previews],
+        "over": count.isOver(state.limits),
+        "canBoot": ["default": count.fits(state.limits, previews: false), "previews": count.fits(state.limits, previews: true)],
+        "devices": state.booted.map { device -> [String: Any] in
+            let owners = state.owners[device.udid] ?? []
+            return ["udid": device.udid, "name": device.name, "runtime": device.runtime, "set": device.previews ? "previews" : "default",
+                    "owners": owners.map(\.json), "owned": !owners.isEmpty, "mine": state.mine.contains(device.udid)]
+        },
+    ]
+    if state.unreadableClaims > 0 { json["unreadableAgentDeviceClaims"] = state.unreadableClaims }
+    return json
+}
+
+/// Exit codes of budget --would-boot and acquire.
+let exitBudgetFull: Int32 = 3, exitOwnedByOther: Int32 = 4
+
+func budgetCommand(_ options: Options) {
+    let state = budgetState()
+    var json = budgetJSON(state)
+    guard options.flags.contains("would-boot") else { printJSON(json); return }
+    let udid = options.values["udid"]?.uppercased()
+    let known = udid.flatMap { udid in state.all.first { $0.device.udid == udid } }
+    if let set = options.values["set"], set != "default", set != "previews" { fail("--set은 default 또는 previews입니다: \(set)") }
+    let previews = options.values["set"].map { $0 == "previews" } ?? known?.device.previews ?? false
+    var would: [String: Any] = ["set": previews ? "previews" : "default"]
+    if let udid { would["udid"] = udid }
+    let allowed: Bool
+    if known?.booted == true {
+        allowed = true
+        would["alreadyBooted"] = true
+        would["reason"] = "이미 켜져 있는 기기입니다."
+    } else {
+        allowed = state.count.fits(state.limits, previews: previews)
+        would["alreadyBooted"] = false
+        let count = state.count
+        would["reason"] = allowed ? "자리가 있습니다." :
+            "켜진 시뮬레이터가 \(count.total)대(기본 세트 \(count.defaultSet)대)이고 제한은 \(state.limits.total)대(기본 세트 \(state.limits.defaultSet)대)입니다. "
+            + "owned가 false인 켜진 기기를 그대로 쓰거나, 쓰는 세션이 끝나기를 기다리거나, 사용자에게 알립니다."
+    }
+    would["allowed"] = allowed
+    json["wouldBoot"] = would
+    printJSON(json)
+    if !allowed { exit(exitBudgetFull) }
+}
+
+/// One acquire at a time, so that two sessions cannot both take the last place.
+func withBudgetLock<T>(_ body: () -> T) -> T {
+    let file = SimulatorBudgetConfig.fileURL.deletingLastPathComponent().appendingPathComponent("budget.lock")
+    try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let descriptor = open(file.path, O_CREAT | O_RDWR, 0o644)
+    guard descriptor >= 0 else { return body() }
+    defer { flock(descriptor, LOCK_UN); close(descriptor) }
+    flock(descriptor, LOCK_EX)
+    return body()
+}
+
+func acquireCommand(_ options: Options) {
+    let wantedUDID = options.values["udid"]?.uppercased(), wantedName = options.values["name"]
+    guard (wantedUDID == nil) != (wantedName == nil) else { fail("--udid 또는 --name 중 하나가 필요합니다.") }
+    let deadline = Date().addingTimeInterval(TimeInterval(options.int("wait", default: 0)))
+    let me = currentSession()
+    while true {
+        // nil: the budget is full; try again while --wait lasts.
+        let outcome: [String: Any]? = withBudgetLock {
+            let state = budgetState()
+            let candidates = state.all.filter { !$0.device.previews }
+                .filter { wantedUDID != nil ? $0.device.udid == wantedUDID : $0.device.name == wantedName }
+            guard !candidates.isEmpty else {
+                fail("기본 세트에 그런 기기가 없습니다: \(wantedUDID ?? wantedName ?? ""). xcrun simctl list devices로 확인하세요.")
+            }
+            func free(_ udid: String) -> Bool { (state.owners[udid] ?? []).isEmpty || state.mine.contains(udid) }
+            let pick = candidates.first { $0.booted && free($0.device.udid) } ?? candidates.first { !$0.booted } ?? candidates[0]
+            let device = pick.device
+            func claim() {
+                var claims = loadClaims()
+                claims[device.udid] = Claim(by: me.by, note: options.values["note"] ?? "", pid: me.pid, since: ISO8601DateFormatter().string(from: Date()))
+                saveClaims(claims)
+            }
+            if pick.booted {
+                if !free(device.udid), !options.flags.contains("force") {
+                    printJSON(["acquired": false, "reason": "owned", "udid": device.udid, "name": device.name,
+                               "owners": (state.owners[device.udid] ?? []).map(\.json)])
+                    FileHandle.standardError.write("sim-pilot: \(device.name)는 다른 세션이 쓰는 중입니다. 사용자에게 묻고, 함께 써도 된다고 하면 --force를 붙입니다.\n".data(using: .utf8)!)
+                    exit(exitOwnedByOther)
+                }
+                claim()
+                return ["acquired": true, "booted": "already", "udid": device.udid, "name": device.name, "runtime": device.runtime]
+            }
+            guard state.count.fits(state.limits, previews: false) else { return nil }
+            let boot = run(["simctl", "boot", device.udid])
+            guard boot.status == 0 else { fail("\(device.name)를 켜지 못했습니다: \(boot.error.trimmingCharacters(in: .whitespacesAndNewlines))") }
+            claim()
+            return ["acquired": true, "booted": "now", "udid": device.udid, "name": device.name, "runtime": device.runtime]
+        }
+        if let outcome { printJSON(outcome); return }
+        guard Date() < deadline else {
+            var json = budgetJSON(budgetState())
+            json["acquired"] = false
+            json["reason"] = "full"
+            printJSON(json)
+            FileHandle.standardError.write("sim-pilot: 동시에 켤 수 있는 시뮬레이터가 꽉 찼습니다. 새로 켜지 말고, owned가 false인 켜진 기기를 쓰거나 기다리거나 사용자에게 알립니다.\n".data(using: .utf8)!)
+            exit(exitBudgetFull)
+        }
+        Thread.sleep(forTimeInterval: min(5, max(0.5, deadline.timeIntervalSinceNow)))
+    }
+}
+
 /// devicectl's JSON result for one device (`info details`, `info displays`), nil when it fails.
 func devicectlResult(_ udid: String, _ arguments: [String]) -> [String: Any]? {
     let file = FileManager.default.temporaryDirectory.appendingPathComponent("sim-pilot-\(UUID().uuidString).json")
@@ -521,12 +991,12 @@ let arguments = CommandLine.arguments
 guard arguments.count > 1 else {
     print("""
         sim-pilot \(version)
-          devices | schemes | launch | logs | console | photos | caps | status | claim | release | claims | --version
+          devices | schemes | launch | logs | console | photos | caps | status | claim | release | claims | budget | acquire | --version
         자세한 사용법은 simulator-pilot 스킬 문서를 보세요.
         """)
     exit(0)
 }
-let flags: Set<String> = ["build", "reinstall", "debug", "grayscale", "yes", "allow-real", "force"]
+let flags: Set<String> = ["build", "reinstall", "debug", "grayscale", "yes", "allow-real", "force", "would-boot"]
 let options = Options(arguments.dropFirst(2), flags: flags)
 switch arguments[1] {
 case "--version", "version": print(version)
@@ -541,5 +1011,7 @@ case "claim": claimCommand(options)
 case "release": releaseCommand(options)
 case "claims": claimsCommand()
 case "status": statusCommand()
+case "budget": budgetCommand(options)
+case "acquire": acquireCommand(options)
 default: fail("알 수 없는 명령: \(arguments[1])")
 }

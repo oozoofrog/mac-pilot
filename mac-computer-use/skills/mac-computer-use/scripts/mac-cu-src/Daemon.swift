@@ -107,7 +107,9 @@ var connections: [AgentSession] = []
 var currentSession: AgentSession?
 // shortcut: one serial queue, so an approval dialog of one session (up to 3 minutes) holds the other sessions;
 // make the app tools alone serial when sessions overlap often.
-let handleQueue = DispatchQueue(label: "mac-cu.handle")
+// Each request drains its autorelease pool: a reply with a screenshot or a view capture is tens of megabytes, and
+// without this the buffers stay until the worker thread goes idle (never, while LCD windows poll every 2 seconds).
+let handleQueue = DispatchQueue(label: "mac-cu.handle", autoreleaseFrequency: .workItem)
 var menuBar: MenuBar?
 
 func quitDaemon() -> Never {
@@ -135,8 +137,7 @@ func runDaemon() -> Never {
     let host = executablePath(of: getpid())
     Thread.detachNewThread {
         while true {
-            let client = accept(server, nil, nil)
-            guard client >= 0 else { continue }
+            guard let client = acceptClient(server) else { continue }
             Thread.detachNewThread { serve(client, host: host) }
         }
     }
@@ -293,7 +294,13 @@ final class MenuBar: NSObject, NSMenuDelegate, NSApplicationDelegate, NSMenuItem
             SimulatorPreparationWindow.shared.boardChanged()
             self?.refreshWindowStatus()
         }
+        SimulatorStatusBoard.shared.isShown = { [weak self] in
+            self?.trackingMenu == true || !simulatorWindows.isEmpty || SimulatorStatusWindow.shared.isVisible ||
+                SimulatorPreparationWindow.shared.isVisible
+        }
         SimulatorStatusBoard.shared.start()
+        SimulatorBudgetWatch.shared.onChange = { [weak self] in self?.refreshWindowStatus() }
+        SimulatorBudgetWatch.shared.start()
         for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification,
                      NSApplication.didHideNotification, NSApplication.didUnhideNotification] {
             NotificationCenter.default.addObserver(self, selector: #selector(windowStatusChanged), name: name, object: NSApp)
@@ -316,9 +323,12 @@ final class MenuBar: NSObject, NSMenuDelegate, NSApplicationDelegate, NSMenuItem
         let windows = simulatorWindows.values.sorted { $0.window.title < $1.window.title }
         SimulatorPreviewStacks.shared.update()
         let background = windows.filter { simulatorWindowVisibility($0.window) != .foreground }.count
-        item.button?.title = windows.count == 1 ? " LCD · \(simulatorWindowVisibility(windows[0].window).rawValue)" :
+        let budget = SimulatorBudgetWatch.shared.snapshot
+        let lcd = windows.count == 1 ? " LCD · \(simulatorWindowVisibility(windows[0].window).rawValue)" :
             windows.isEmpty ? "" : " LCD \(windows.count) · 배경 \(background)"
-        item.button?.toolTip = (["mac-cu \(bundleVersion)"] + windows.map {
+        // Over the limit: the count stays in the menu bar until it is back inside.
+        item.button?.title = lcd + (budget.isOver ? " ⚠ 시뮬레이터 \(budget.count.total)/\(budget.limits.total)" : "")
+        item.button?.toolTip = (["mac-cu \(bundleVersion)"] + (budget.isOver ? [budget.summary] : []) + windows.map {
             "\($0.window.title) · \(simulatorWindowVisibility($0.window).rawValue)"
         }).joined(separator: "\n")
         if !trackingMenu { updateLCDMenu() }
@@ -361,8 +371,17 @@ final class MenuBar: NSObject, NSMenuDelegate, NSApplicationDelegate, NSMenuItem
         }
         menu.addItem(.separator())
         let simulators = SimulatorStatusBoard.shared.statuses
-        menu.addItem(label(simulators.isEmpty ? "부팅된 시뮬레이터 없음" : "시뮬레이터 \(simulators.count)대"))
+        let budget = SimulatorBudgetWatch.shared.snapshot
+        menu.addItem(label(budget.summary))
         for status in simulators { menu.addItem(label("  " + status.line)) }
+        for device in budget.devices where device.previews { menu.addItem(label("  \(device.name) · Xcode Previews")) }
+        for event in SimulatorBudgetWatch.shared.recentEvents { menu.addItem(label("  " + event)) }
+        if budget.isOver, !budget.unowned.isEmpty {
+            let stop = NSMenuItem(title: "쓰는 곳 없는 기기 \(budget.unowned.count)대 지금 종료", action: #selector(shutDownUnownedSimulators), keyEquivalent: "")
+            stop.target = self
+            menu.addItem(stop)
+        }
+        menu.addItem(simulatorLimitMenu(budget))
         let preparation = NSMenuItem(title: "시뮬레이터 관리…", action: #selector(manageSimulators), keyEquivalent: "")
         preparation.target = self
         menu.addItem(preparation)
@@ -403,7 +422,7 @@ final class MenuBar: NSObject, NSMenuDelegate, NSApplicationDelegate, NSMenuItem
         menu.addItem(quit)
     }
 
-    func menuWillOpen(_ menu: NSMenu) { trackingMenu = true }
+    func menuWillOpen(_ menu: NSMenu) { trackingMenu = true; SimulatorStatusBoard.shared.refresh(); SimulatorBudgetWatch.shared.refresh() }
     func menuDidClose(_ menu: NSMenu) { trackingMenu = false; refreshWindowStatus() }
 
     func updateLCDMenu() {
@@ -469,7 +488,44 @@ final class MenuBar: NSObject, NSMenuDelegate, NSApplicationDelegate, NSMenuItem
     }
 
     @objc func showSimulators() { SimulatorStatusWindow.shared.show() }
-    @objc func manageSimulators() { SimulatorPreparationWindow.shared.show() }
+
+    /// "시뮬레이터 동시 실행 제한": automatic (from memory and free disk) or a number, and the automatic shutdown.
+    func simulatorLimitMenu(_ budget: SimulatorBudgetSnapshot) -> NSMenuItem {
+        let submenu = NSMenu()
+        let limits = budget.limits
+        let disk = limits.freeDiskGiB.map { ", 디스크 여유 \($0)GB" } ?? ""
+        let automatic = NSMenuItem(title: "자동: \(limits.automaticTotal)대 (메모리 \(limits.memoryGiB)GB\(disk))", action: #selector(setSimulatorLimit(_:)), keyEquivalent: "")
+        automatic.target = self
+        automatic.representedObject = 0
+        automatic.state = limits.automatic ? .on : .off
+        submenu.addItem(automatic)
+        for total in 1...8 {
+            let entry = NSMenuItem(title: "\(total)대", action: #selector(setSimulatorLimit(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.representedObject = total
+            entry.state = !limits.automatic && limits.total == total ? .on : .off
+            submenu.addItem(entry)
+        }
+        submenu.addItem(.separator())
+        submenu.addItem(label("기본 세트는 \(limits.defaultSet)대까지 (Xcode Previews 한 자리)"))
+        let shutdown = NSMenuItem(title: "제한을 넘으면 \(budget.config.idleMinutes)분 동안 쓰는 곳 없는 기기 자동 종료", action: #selector(toggleSimulatorAutoShutdown), keyEquivalent: "")
+        shutdown.target = self
+        shutdown.state = budget.config.autoShutdown ? .on : .off
+        submenu.addItem(shutdown)
+        let entry = NSMenuItem(title: "시뮬레이터 동시 실행 제한", action: nil, keyEquivalent: "")
+        entry.submenu = submenu
+        return entry
+    }
+
+    @objc func setSimulatorLimit(_ sender: NSMenuItem) {
+        let total = sender.representedObject as? Int ?? 0
+        SimulatorBudgetWatch.shared.update { $0.manualTotal = total > 0 ? total : nil }
+    }
+
+    @objc func toggleSimulatorAutoShutdown() { SimulatorBudgetWatch.shared.update { $0.autoShutdown.toggle() } }
+
+    @objc func shutDownUnownedSimulators() { SimulatorBudgetWatch.shared.shutDownUnowned() }
+    @objc func manageSimulators() { SimulatorPreparationWindow.shared.show(); SimulatorStatusBoard.shared.refresh() }
 
     @objc func showDecisionSettings() {
         // Menu actions have no requesting MCP session. Never reuse the last client's key.
@@ -622,7 +678,7 @@ func runClient() -> Never {
         }
         return fd
     }
-    while let line = readLine(strippingNewline: true) {
+    while let line = readLine(strippingNewline: true) { autoreleasepool {
         var sent = false
         for _ in 0..<2 where !sent {
             guard let fd = connection() else { break }
@@ -636,7 +692,7 @@ func runClient() -> Never {
         if !sent, let id = (try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])?["id"] {
             _ = writeLine(1, ["jsonrpc": "2.0", "id": id, "error": ["code": -32000, "message": "mac-cu could not reach its daemon (see stderr). Run setup.py."]])
         }
-    }
+    } }
     exit(0)
 }
 

@@ -44,7 +44,7 @@ func gestureHIDReport(_ contacts: [GestureContact], screen: ActiveScreen?, size:
 final class GestureHIDLink {
     private let deviceID: String
     private let connection: xpc_connection_t
-    private let queue = DispatchQueue(label: "mac-cu.gesture-hid")
+    private let queue = DispatchQueue(label: "mac-cu.gesture-hid", autoreleaseFrequency: .workItem)
     private let externalSend: ((xpc_object_t, xpc_object_t) -> Void)?
     private let externalReply: ((xpc_object_t, xpc_object_t, String) throws -> xpc_object_t)?
     private let simulatorConnectionOwned: Bool

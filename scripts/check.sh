@@ -68,6 +68,9 @@ mkdir -p "$device"
     "$device/physical-link" --missing-runtime
 )
 python3 -B mac-computer-use/tests/setup-signing-selfcheck.py
+swiftc -parse-as-library "$src/SimulatorBudget.swift" mac-computer-use/tests/simulator-budget-selfcheck.swift -o "$out/simulator-budget"
+"$out/simulator-budget"
+python3 -B mac-computer-use/tests/check-sim-pilot-budget.py "$out/sim-pilot-budget"
 bash mac-computer-use/tests/check-simulator-gestures.sh
 swiftc -typecheck simulator-pilot/skills/simulator-pilot/tool/sim-pilot.swift
 git diff --check

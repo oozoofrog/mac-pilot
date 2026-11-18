@@ -67,6 +67,8 @@ final class SimulatorPreparationWindow: NSObject, NSWindowDelegate, NSTableViewD
         if operation == nil { refresh() }
     }
 
+    var isVisible: Bool { window?.isVisible == true }
+
     func boardChanged() {
         guard window?.isVisible == true, operation == nil, !choosingInstallation else { return }
         guard tabs.selectedTabViewItem?.identifier as? String == "devices", !(window?.firstResponder is NSTextView) else { return }

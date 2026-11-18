@@ -2,7 +2,7 @@ import AppKit
 
 /// One executor for translator, tokens, lazy requests and retained sessions. Completion never uses it.
 enum SimulatorAXExecutor {
-    static let queue = DispatchQueue(label: "mac-cu.simulator-ax.owner")
+    static let queue = DispatchQueue(label: "mac-cu.simulator-ax.owner", autoreleaseFrequency: .workItem)
     private static let key = DispatchSpecificKey<Bool>()
     private static let installed: Void = queue.setSpecific(key: key, value: true)
     static func sync<T>(_ body: () throws -> T) rethrows -> T {

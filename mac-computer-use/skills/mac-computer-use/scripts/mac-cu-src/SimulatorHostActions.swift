@@ -35,7 +35,7 @@ final class SimulatorHostActions: NSObject {
 
     private let deviceID: String
     private let executable: URL
-    private let queue = DispatchQueue(label: "mac-cu.simulator-host-actions")
+    private let queue = DispatchQueue(label: "mac-cu.simulator-host-actions", autoreleaseFrequency: .workItem)
     private var closed = false
     private var recordingAdmission = false
     private var savePanel: NSSavePanel?

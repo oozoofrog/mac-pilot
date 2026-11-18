@@ -35,8 +35,9 @@ xcodebuild -version | head -1                    # mac-cu simulator 도구는 Xc
 - **런타임·기기 준비:** mac-cu 메뉴바 또는 앱 메뉴의 **시뮬레이터 관리…**에서 설치된 전체 기기를 조회하고, 런타임 다운로드·DMG 가져오기, 호환 기기 생성, 선택 UDID 실행과 네이티브 LCD 열기를 할 수 있다. 런타임은 시뮬레이터 OS이며 테스트 앱 설치와 다르다. 다운로드·가져오기는 해당 화면에서 사용자가 명시적으로 선택한다. 생성한 기기는 자동 부팅하지 않으며, 사용 기록이 있는 기기는 관리 화면에서 실행/LCD 열기를 차단한다. 앱 빌드·설치·실행은 계속 아래 CLI와 프로젝트 절차를 따른다.
 - **기기 상태를 사용자에게 알린다.** 시뮬레이터 작업을 시작할 때 한 번, 지금 켜진 기기와 각 기기를 누가 쓰는지(`sim-pilot status`)를 짧게 보여 주고, Mac 메뉴 막대의 mac-cu 아이콘 > "시뮬레이터 상태 창 열기…"에서 언제든 볼 수 있다고 알린다(5초마다 새로 읽는다). 기기를 켜거나 끄거나, 접거나 돌리거나, 설정을 바꾸면 무엇을 바꿨고 끝나면 어떻게 되돌리는지 그때 말한다.
 - **다른 세션과 기기를 함께 쓴다.** `sim-pilot devices`의 `claimed_by`·`mine`, 또는 `sim-pilot claims`로 누가 쓰는지 본다. 고른 기기(또는 내가 켠 기기)는 `sim-pilot claim --udid <UDID> --note "<할 일>"`로 기록한다. 다른 세션이 쓰는 기기(`mine: false`)는 끄기·다시 부팅·접기·회전·설정 변경 전에 사용자에게 묻는다(승인받으면 `claim --force`). 일이 끝나면 `sim-pilot release --udid <UDID>`. 꺼진 기기와 끝난 세션의 기록은 저절로 지워진다.
+- **켜 둘 수 있는 대수에 제한이 있다.** 기기를 켜는 일(`simctl boot`, `xcodebuild test`, 기기 패널 열기, Xcode 실행·프리뷰) 전에 `sim-pilot budget`을 본다. `canBoot.default`가 false면 새로 켜지 않는다: `owned`가 false인 켜진 기기를 그대로 쓰거나, 쓰는 세션이 끝나기를 기다리거나, 어느 세션이 쓰는지 사용자에게 알린다. 직접 켤 때는 `sim-pilot acquire --udid <UDID> --note "<할 일>"`을 쓴다(자리가 있을 때만 켜고 사용 기록까지 남긴다; 꽉 찼으면 종료 코드 3). 한 세션은 한 대만 켠다. 일이 끝나면 내가 켠 기기는 `xcrun simctl shutdown <UDID>`로 끄고 `sim-pilot release`한다. 제한은 사용자가 mac-cu 메뉴 막대의 **시뮬레이터 동시 실행 제한**에서 바꾼다. 쓰는 곳 없이 오래 켜져 있는 기기는 mac-cu가 끌 수 있으므로, 쓰는 기기는 꼭 기록한다.
 - 부팅된 기기가 하나면 그 기기를 쓴다. 여럿이면 이름·OS를 보여 주고 한 번 묻는다. 고른 UDID를 이번 작업 내내 쓰고, mac-cu `simulator` 호출에는 `device`로 넘긴다.
-- 부팅된 기기가 없으면 `xcrun simctl list devices available`에서 고를 기기를 묻고 `xcrun simctl boot <UDID>`로 부팅한다. 화면 창이 필요하면 설치된 쪽을 연다(Xcode 27은 Device Hub, 그 이전은 Simulator). 조작·스크린샷에는 창이 없어도 된다.
+- 부팅된 기기가 없으면 `xcrun simctl list devices available`에서 고를 기기를 묻고 `sim-pilot acquire --udid <UDID> --note "<할 일>"`로 부팅한다. 화면 창이 필요하면 설치된 쪽을 연다(Xcode 27은 Device Hub, 그 이전은 Simulator). 조작·스크린샷에는 창이 없어도 된다.
   ```sh
   X="$(xcode-select -p)"; if [ -d "$X/../Applications/DeviceHub.app" ]; then open "$X/../Applications/DeviceHub.app"; else open "$X/Applications/Simulator.app"; fi
   ```

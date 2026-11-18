@@ -182,6 +182,11 @@ them until the session ends.
 - **Simulator status on the Mac.** The mac-cu menu bar menu lists the booted simulators with the screen that is
   on, its rotation and the agent session that uses each (simulator-pilot's `sim-pilot claim`); "시뮬레이터 상태 창
   열기…" opens a small window that reads them again every 5 seconds. Point the person there.
+- **Simulator limit.** The same menu shows how many simulators are booted against the limit ("시뮬레이터 5대 · 제한
+  3대(자동)"), which follows the Mac's memory and free disk space unless the person picks a number under "시뮬레이터
+  동시 실행 제한". Over the limit the menu bar shows `⚠ 시뮬레이터 5/3`. With the automatic shutdown on, mac-cu shuts
+  down default-set devices that nobody has used for 15 minutes while over the limit (never Xcode Previews devices),
+  and says which and why. Before booting a device, check `sim-pilot budget` (simulator-pilot).
 - **Device Hub** (Xcode 27, `com.apple.dt.Devices`) shows the simulator to the user and has the device's
   buttons (Home, Screenshot, Record, Rotate Right, Closed / Partially Open / Open) and settings
   (Appearance, Text Size, Reduce Motion, VoiceOver, Location…). Read and press them with
