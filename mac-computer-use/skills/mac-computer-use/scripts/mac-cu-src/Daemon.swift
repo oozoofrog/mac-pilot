@@ -65,6 +65,8 @@ final class AgentSession {
     let fd: Int32
     var agent = "?"
     var version = ""
+    /// Who the session is, for the simulator use records (SimulatorCollaboration.swift). Set by its hello.
+    var identity: AgentIdentity?
     var env: [String: String] = [:]
     var approvedApps: Set<String> = []
     var current: (tool: String, target: String, started: Date)?
@@ -170,6 +172,11 @@ func serve(_ fd: Int32, host: String?) {
         case "hello":
             connection.agent = message["agent"] as? String ?? "?"
             connection.version = message["version"] as? String ?? ""
+            let identity = agentIdentity(hello: message, agent: connection.agent, peer: peerProcess(of: fd))
+            connectionsLock.lock()
+            connection.identity = identity
+            connectionsLock.unlock()
+            if identity.pid > 0 { CollaborationStore.standard.sessions(seen: identity, via: "mac-cu") }
             connection.env = (message["env"] as? [String: String] ?? [:]).filter {
                 DecisionSettings.environmentNames.contains($0.key)
             }
@@ -198,6 +205,7 @@ func serve(_ fd: Int32, host: String?) {
                 defer { connection.endRequest(); currentSession = nil }
                 let params = message["params"] as? [String: Any] ?? [:]
                 if message["method"] as? String == "tools/call" {
+                    if let identity = connection.identity, identity.pid > 0 { CollaborationStore.standard.sessions(seen: identity, via: "mac-cu") }
                     let arguments = params["arguments"] as? [String: Any] ?? [:]
                     let target = ["app", "page", "engine", "device"].lazy.compactMap { arguments[$0] as? String }.first ?? ""
                     connectionsLock.lock()
@@ -230,12 +238,12 @@ let modeLabels = ["auto": "auto · 뒤에서 조작하고, 안 될 때만 앞으
 
 extension SimulatorPreparationWindow {
     static let shared = SimulatorPreparationWindow(
-        backendFactory: { SimulatorPreparationBackend(task: $0, claims: { simulatorClaims().mapValues { $0.0 } }) },
-        claims: { simulatorClaims().mapValues { $0.0 } },
+        backendFactory: { SimulatorPreparationBackend(task: $0, claims: { simulatorClaims(explicitOnly: true).mapValues { $0.0 } }) },
+        claims: { simulatorClaims(explicitOnly: true).mapValues { $0.0 } },
         openLCD: { id, task in
             try handleQueue.sync {
                 try task.checkCancellation()
-                guard simulatorClaims()[id] == nil else { throw SimulatorPreparationError("다른 세션이 사용 중입니다. 해당 세션에서 확인한 뒤 LCD를 여세요.") }
+                guard simulatorClaims(explicitOnly: true)[id] == nil else { throw SimulatorPreparationError("다른 세션이 사용 중입니다. 해당 세션에서 확인한 뒤 LCD를 여세요.") }
                 let device = try bootedDevice(id)
                 return try simulatorWindowAction(device, active: activeScreen(of: device), close: false)
             }
@@ -358,7 +366,7 @@ final class MenuBar: NSObject, NSMenuDelegate, NSApplicationDelegate, NSMenuItem
             appendLCDItems(to: menu)
         }
         connectionsLock.lock()
-        let sessions = connections.map { ($0.agent, $0.current) }
+        let sessions = connections.map { ($0.identity?.label ?? $0.agent, $0.current) }
         connectionsLock.unlock()
         if sessions.isEmpty { menu.addItem(label("연결된 세션 없음")) }
         for (agent, current) in sessions {
@@ -374,6 +382,10 @@ final class MenuBar: NSObject, NSMenuDelegate, NSApplicationDelegate, NSMenuItem
         let budget = SimulatorBudgetWatch.shared.snapshot
         menu.addItem(label(budget.summary))
         for status in simulators { menu.addItem(label("  " + status.line)) }
+        let names = Dictionary(simulators.map { ($0.udid.uppercased(), $0.name) }, uniquingKeysWith: { first, _ in first })
+        for request in CollaborationStore.standard.state().requests where request.declined.isEmpty {
+            menu.addItem(label("  요청: \(request.label) → \(names[request.udid] ?? request.udid)"))
+        }
         for device in budget.devices where device.previews { menu.addItem(label("  \(device.name) · Xcode Previews")) }
         for event in SimulatorBudgetWatch.shared.recentEvents { menu.addItem(label("  " + event)) }
         if budget.isOver, !budget.unowned.isEmpty {
@@ -657,7 +669,9 @@ func runClient() -> Never {
     let apps = parentApps()
     let agent = (apps.first(where: hasIcon) ?? apps.first).map { $0.deletingPathExtension().lastPathComponent } ?? "terminal"
     let env = ProcessInfo.processInfo.environment.filter { DecisionSettings.environmentNames.contains($0.key) }
-    let hello: [String: Any] = ["mac-cu": "hello", "version": bundleVersion, "agent": agent, "env": env]
+    let identity = AgentIdentity.detect(environment: ProcessInfo.processInfo.environment,
+                                        directory: FileManager.default.currentDirectoryPath, parent: getppid(), fallbackAgent: agent)
+    let hello: [String: Any] = ["mac-cu": "hello", "version": bundleVersion, "agent": agent, "env": env, "identity": identity.json]
     let lock = NSLock()
     var socket: Int32?
     func connection() -> Int32? {

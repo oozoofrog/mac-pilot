@@ -8,13 +8,13 @@
       "name": "mac-computer-use",
       "source": "./mac-computer-use",
       "description": "Operate Mac apps, browser pages, iOS web views and physical iPhones with the mac-cu MCP server. Use for desktop UI tasks without a better API or CLI, web view inspection, input and screenshots on a connected iPhone, or mac-cu setup, modes and simulator preparation. Route iOS Simulator app launch, logs, test data and change verification through simulator-pilot.",
-      "version": "1.32.0"
+      "version": "1.33.0"
     },
     {
       "name": "simulator-pilot",
       "source": "./simulator-pilot",
       "description": "Use for iOS Simulator app launch, logs, screen interaction, test data and change verification. Use mac-computer-use for screen controls; follow the project build instructions for compilation. Excludes Mac desktop/browser/web view tasks and account signup.",
-      "version": "1.9.0"
+      "version": "1.10.0"
     }
   ]
 }

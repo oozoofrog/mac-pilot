@@ -79,7 +79,7 @@ final class SimulatorBudgetWatch: NSObject, UNUserNotificationCenterDelegate {
         next.devices = booted.sorted { ($0.name, $0.udid) < ($1.name, $1.udid) } + bootedPreviewSimulators(processes)
         let use = simulatorProcessUse(udids: next.devices.map(\.udid), processes: processes, ignoring: [getpid()])
         let agents = readAgentDeviceOwners()
-        let claims = simulatorClaims()
+        let claims = CollaborationStore.standard.state().claims
         let (windows, userActive): (Set<String>, Bool) = DispatchQueue.main.sync {
             (Set(simulatorWindows.keys.map { $0.uppercased() }),
              NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.iphonesimulator")
@@ -87,9 +87,7 @@ final class SimulatorBudgetWatch: NSObject, UNUserNotificationCenterDelegate {
         for device in next.devices {
             var owners = use[device.udid]?.owners ?? []
             owners += agents.owners[device.udid] ?? []
-            if let claim = claims.first(where: { $0.key.uppercased() == device.udid }) {
-                owners.append(SimulatorOwner(kind: "sim-pilot", by: claim.value.0, pid: 0))
-            }
+            if let claim = claims[device.udid] { owners.append(SimulatorOwner(kind: claim.auto ? "mac-cu" : "sim-pilot", by: claim.label, pid: claim.pid)) }
             if windows.contains(device.udid) { owners.append(SimulatorOwner(kind: "lcd-window", by: "mac-cu", pid: getpid())) }
             // A claim file that could not be read may be this device's: its owner is unknown, not absent.
             if agents.unreadable > 0, !device.previews { owners.append(SimulatorOwner(kind: "agent-device", by: "읽지 못한 기록", pid: 0)) }

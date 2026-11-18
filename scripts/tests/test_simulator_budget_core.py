@@ -1,23 +1,30 @@
-"""The simulator budget rules exist twice: in mac-cu and in sim-pilot. They must be the same text."""
+"""Rules that mac-cu and sim-pilot share exist twice: in mac-cu and in sim-pilot. They must be the same text."""
 from pathlib import Path
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-BEGIN, END = '// BEGIN simulator-budget-core', '// END simulator-budget-core'
+SOURCES = ROOT / 'mac-computer-use/skills/mac-computer-use/scripts/mac-cu-src'
+TOOL = ROOT / 'simulator-pilot/skills/simulator-pilot/tool/sim-pilot.swift'
 
 
-def core(path: Path) -> str:
+def core(path: Path, name: str) -> str:
+    begin, end = f'// BEGIN {name}', f'// END {name}'
     text = path.read_text()
-    assert text.count(BEGIN) == 1 and text.count(END) == 1, path
-    return text[text.index(BEGIN):text.index(END)]
+    assert text.count(begin) == 1 and text.count(end) == 1, (path, name)
+    return text[text.index(begin):text.index(end)]
 
 
-class SimulatorBudgetCore(unittest.TestCase):
-    def test_both_copies_are_identical(self):
-        daemon = core(ROOT / 'mac-computer-use/skills/mac-computer-use/scripts/mac-cu-src/SimulatorBudget.swift')
-        tool = core(ROOT / 'simulator-pilot/skills/simulator-pilot/tool/sim-pilot.swift')
+class SharedSimulatorCore(unittest.TestCase):
+    def check(self, source: str, name: str):
+        daemon, tool = core(SOURCES / source, name), core(TOOL, name)
         self.assertGreater(len(daemon), 2000)
-        self.assertEqual(daemon, tool, 'Copy the core of SimulatorBudget.swift into sim-pilot.swift (or back).')
+        self.assertEqual(daemon, tool, f'Copy the {name} block of {source} into sim-pilot.swift (or back).')
+
+    def test_budget_copies_are_identical(self):
+        self.check('SimulatorBudget.swift', 'simulator-budget-core')
+
+    def test_collaboration_copies_are_identical(self):
+        self.check('SimulatorCollaboration.swift', 'simulator-collab-core')
 
 
 if __name__ == '__main__':

@@ -291,7 +291,7 @@ let tools: [[String: Any]] = [
         "name": "simulator",
         "description": """
             Operate a booted iOS Simulator (Xcode 27 or later) with HID events, in the background: tap, swipe, gesture, \
-            type, key, button, paste, screenshot, list, and read its screen: describe gives the front app's \
+            type, key, button, paste, screenshot, list (with the agent session that uses each device), and read its screen: describe gives the front app's \
             accessibility elements (role, label, id, value, center), wait waits for an element to appear, and \
             tap with target taps the element named by a label or id. x and y are points: the pixels of the screenshot \
             action. type sends keys as a hardware keyboard: US characters, or Hangul as two-set keys when \
@@ -299,6 +299,7 @@ let tools: [[String: Any]] = [
             paste puts any text on the pasteboard and uses the native three-finger editing menu when available, otherwise cmd+V; if iOS asks to allow the paste, \
             take a screenshot and tap the Allow Paste button (mac-cu puts the user's Mac pasteboard back after it). \
             hinge folds a foldable device (iPhone Duo) continuously to degrees or a state (with neither, it only reads). \
+            A result can end with a Notice line: another agent session holds the device you sent input to, or waits for one you hold; do what it says (sim-pilot request, release or decline). \
             rotate delivers an orientation request. Setters return after safe local delivery/motion, with structured \
             confirmationPending when guest state is not yet observed. Read hinge or screenshot/describe to verify actual state. views gives the \
             app's UIView hierarchy with frames, hidden, alpha and Auto Layout constraints, as Xcode's view debugger \

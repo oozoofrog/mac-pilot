@@ -187,6 +187,13 @@ them until the session ends.
   동시 실행 제한". Over the limit the menu bar shows `⚠ 시뮬레이터 5/3`. With the automatic shutdown on, mac-cu shuts
   down default-set devices that nobody has used for 15 minutes while over the limit (never Xcode Previews devices),
   and says which and why. Before booting a device, check `sim-pilot budget` (simulator-pilot).
+- **Agent sessions and simulators.** mac-cu records which agent session uses each simulator. The menu lists each
+  connected session as agent and project ("Claude Code · Cards"), and each device with its user. `simulator` `list`
+  adds a use column. Input that a session sends to a device nobody holds makes the device that session's until 30
+  minutes pass without input; `sim-pilot claim` keeps it for the whole task. A result ends with a `Notice:` line when
+  another session holds the device you sent input to, or waits for a device you hold: follow it (stop and ask, or
+  `sim-pilot request` / `release` / `decline`). The records are shared with `sim-pilot`
+  (`~/Library/Application Support/sim-pilot`); `sim-pilot sessions` lists every session.
 - **Device Hub** (Xcode 27, `com.apple.dt.Devices`) shows the simulator to the user and has the device's
   buttons (Home, Screenshot, Record, Rotate Right, Closed / Partially Open / Open) and settings
   (Appearance, Text Size, Reduce Motion, VoiceOver, Location…). Read and press them with

@@ -49,7 +49,7 @@ for device in plain['devices']:
     expect(set(device) == {'udid', 'name', 'runtime', 'set', 'owners', 'owned', 'mine'} and device['set'] in ('default', 'previews')
            and device['owned'] == bool(device['owners']) and device['udid'] == device['udid'].upper(), f'device row {device}')
     for owner in device['owners']:
-        expect(set(owner) == {'kind', 'by', 'pid'} and owner['kind'] in ('sim-pilot', 'agent-device', 'process', 'test-runner'), f'owner {owner}')
+        expect(set(owner) == {'kind', 'by', 'pid'} and owner['kind'] in ('sim-pilot', 'mac-cu', 'agent-device', 'process', 'test-runner'), f'owner {owner}')
 expect(plain['over'] == (booted['total'] > limit['total'] or booted['defaultSet'] > limit['defaultSet']), 'over')
 
 for total in (1, 12):

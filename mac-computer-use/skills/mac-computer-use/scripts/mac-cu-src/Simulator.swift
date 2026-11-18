@@ -777,12 +777,14 @@ func simulatorTool(_ arguments: [String: Any]) throws -> [String: Any] {
     func text(_ value: String) -> [String: Any] { ["content": [["type": "text", "text": value]]] }
     if action == "list" {
         let booted = try simulatorDevices().filter(isBooted)
+        let users = simulatorCollaborationLines(udids: booted.map(udid(of:)), identity: currentSession?.identity)
         let lines = booted.map { device -> String in
             let size = screenSize(of: device)
             let runtime = (device.value(forKey: "runtime") as? NSObject)?.value(forKey: "name") as? String ?? "?"
             return "\(device.value(forKey: "name") ?? "?") | \(udid(of: device)) | \(runtime) | \(Int(size.width))×\(Int(size.height)) points"
+                + " | " + (users[udid(of: device).uppercased()] ?? "no session uses it")
         }
-        return text(lines.isEmpty ? "No simulator is booted." : "Booted simulators (name | UDID | runtime | screen):\n" + lines.joined(separator: "\n"))
+        return text(lines.isEmpty ? "No simulator is booted." : "Booted simulators (name | UDID | runtime | screen | use):\n" + lines.joined(separator: "\n"))
     }
     if ["axSnapshot", "axAction"].contains(action) {
         guard let explicitDevice = arguments["device"] as? String, UUID(uuidString: explicitDevice) != nil else {
@@ -797,7 +799,14 @@ func simulatorTool(_ arguments: [String: Any]) throws -> [String: Any] {
     let device = try bootedDevice(arguments["device"] as? String ?? "")
     let activity = SimulatorToolActivity(arguments: arguments, source: "에이전트 · \(currentSession?.agent ?? "mac-cu")",
                                         connection: currentSession?.activityID, request: currentSession?.activityRequestID)
-    return try executeSimulatorCommand(arguments, device: device, activity: activity)
+    var result = try executeSimulatorCommand(arguments, device: device, activity: activity)
+    // Input makes the device this session's when nobody holds it; a session that holds or wants it is told.
+    if let identity = currentSession?.identity, identity.pid > 0,
+       let notice = simulatorCollaborationNotice(udid: udid(of: device), name: device.value(forKey: "name") as? String ?? "The device",
+                                                 mutates: activity.mutatesDevice, identity: identity) {
+        result["content"] = (result["content"] as? [[String: Any]] ?? []) + [["type": "text", "text": notice]]
+    }
+    return result
 }
 
 /// Both tool buttons and MCP use the existing backend, serialized on handleQueue.

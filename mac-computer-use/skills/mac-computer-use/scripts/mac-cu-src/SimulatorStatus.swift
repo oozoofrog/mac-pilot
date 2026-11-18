@@ -20,18 +20,8 @@ struct SimulatorStatus: Equatable {
 
 /// simulator-pilot's claims (Library/Application Support/sim-pilot/claims.json): udid → (who, since), for sessions
 /// whose process still runs.
-func simulatorClaims() -> [String: (String, String)] {
-    let file = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/sim-pilot/claims.json")
-    guard let data = try? Data(contentsOf: file),
-          let all = try? JSONSerialization.jsonObject(with: data) as? [String: [String: Any]] else { return [:] }
-    var claims: [String: (String, String)] = [:]
-    for (udid, claim) in all {
-        let pid = (claim["pid"] as? NSNumber)?.int32Value ?? 0
-        guard pid > 0, kill(pid, 0) == 0 || errno == EPERM else { continue }
-        let note = claim["note"] as? String ?? "", by = claim["by"] as? String ?? ""
-        claims[udid] = (note.isEmpty ? by : note, claim["since"] as? String ?? "")
-    }
-    return claims
+func simulatorClaims(explicitOnly: Bool = false) -> [String: (String, String)] {
+    CollaborationStore.standard.state().claims.filter { !explicitOnly || !$0.value.auto }.mapValues { ($0.label, $0.since) }
 }
 
 /// The status of each booted simulator (devicectl takes about 0.15 s a device).

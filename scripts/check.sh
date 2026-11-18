@@ -71,6 +71,9 @@ python3 -B mac-computer-use/tests/setup-signing-selfcheck.py
 swiftc -parse-as-library "$src/SimulatorBudget.swift" mac-computer-use/tests/simulator-budget-selfcheck.swift -o "$out/simulator-budget"
 "$out/simulator-budget"
 python3 -B mac-computer-use/tests/check-sim-pilot-budget.py "$out/sim-pilot-budget"
+swiftc -parse-as-library "$src/SimulatorCollaboration.swift" "$src/SimulatorCollaborationHost.swift" mac-computer-use/tests/simulator-collaboration-selfcheck.swift -o "$out/simulator-collaboration"
+"$out/simulator-collaboration"
+python3 -B mac-computer-use/tests/check-sim-pilot-collaboration.py "$out/sim-pilot-collaboration"
 bash mac-computer-use/tests/check-simulator-gestures.sh
 swiftc -typecheck simulator-pilot/skills/simulator-pilot/tool/sim-pilot.swift
 git diff --check

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.0 — 2026-11-19
+
+mac-computer-use 1.33.0, simulator-pilot 1.10.0.
+
+- 시뮬레이터를 쓰는 에이전트와 세션을 기록한다. 사용 기록에 에이전트(Claude Code, Codex, 또는 에이전트를 띄운 앱), 프로젝트 폴더 이름, 세션 ID, T3 스레드가 함께 남고, `sim-pilot devices`·`status`·`claims`와 mac-cu 메뉴의 기기 줄에 "Claude Code · Cards · 로그인 확인"처럼 보인다. mac-cu 메뉴의 연결된 세션 줄도 에이전트와 프로젝트로 표시된다. `sim-pilot sessions`는 mac-cu나 sim-pilot을 쓴 세션 전부와 각자 쓰는 기기, 기다리는 기기를 JSON으로 준다.
+- mac-cu `simulator` 도구로 입력(탭·스와이프·글자·버튼·회전·접기)을 보내면, 쓰는 세션이 없던 기기는 그 세션의 것으로 기록된다. 이 자동 기록은 30분 동안 입력이 없으면 사라지고, `sim-pilot claim`으로 남긴 기록은 세션이 끝나거나 놓을 때까지 남는다. 자동 기록은 사용자의 **시뮬레이터 관리…** 창에서 LCD를 여는 것을 막지 않는다. `simulator`의 `list`는 기기마다 쓰는 세션과 기다리는 세션을 함께 보여 준다.
+- 다른 세션이 쓰는 기기를 요청하고 넘겨받는 명령을 추가했다. `sim-pilot request --udid U --note 이유`가 요청을 남기면, 쓰던 세션의 다음 `sim-pilot` 명령(stderr)과 mac-cu `simulator` 결과(`Notice:` 줄)에 누가 왜 기다리는지 나온다. 쓰던 세션은 `sim-pilot release --udid U`로 놓거나 `--to 세션`으로 바로 넘기고, 계속 써야 하면 `sim-pilot decline --udid U --note 답`으로 거절한다. `sim-pilot requests`가 받은 요청과 남긴 요청, 거절 답을 보여 준다. 요청은 30분 뒤, 또는 요청한 세션이 끝나면 사라진다.
+- `sim-pilot acquire --wait 초`가 다른 세션이 쓰는 기기에서도 기다린다. 기다리는 동안 요청을 남기고, 놓이면 기기를 잡고, 거절당하면 답과 함께 종료 코드 4로 끝난다. 시간이 다 되면 남긴 요청을 거두고 4로 끝난다. `--wait` 없이는 전과 같이 바로 4다.
+- 다른 세션이 쓰는 기기에 mac-cu로 입력을 보내면 입력은 전달되고, 결과 끝에 그 기기를 누가 쓰는지와 요청 방법이 `Notice:` 줄로 붙는다(같은 알림은 2분에 한 번). `sim-pilot budget`의 `owners[].kind`에 자동 기록을 뜻하는 `mac-cu`가 추가됐고, `by`는 에이전트 · 프로젝트 · 하는 일로 바뀌었다.
+- 기록 파일은 `~/Library/Application Support/sim-pilot`의 `claims.json`·`requests.json`·`sessions.json`이다. `claims.json`은 sim-pilot 1.5 이하가 읽던 필드를 그대로 둔다.
+
 ## 1.2.0 — 2026-11-19
 
 mac-computer-use 1.32.0, simulator-pilot 1.9.0.

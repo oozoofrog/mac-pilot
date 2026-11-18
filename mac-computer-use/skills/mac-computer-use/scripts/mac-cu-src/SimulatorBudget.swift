@@ -135,7 +135,7 @@ func readBudgetProcesses() -> [BudgetProcess] {
 }
 
 struct SimulatorOwner: Equatable {
-    /// "sim-pilot" (a claim), "agent-device" (a T3 Device panel session), "process" (a tool on the Mac that names the
+    /// "sim-pilot" (a claim), "mac-cu" (input a session sent through mac-cu, without a claim), "agent-device" (a T3 Device panel session), "process" (a tool on the Mac that names the
     /// device), "test-runner" (a UI test runner inside the device) or "lcd-window" (an open mac-cu window).
     let kind: String
     let by: String

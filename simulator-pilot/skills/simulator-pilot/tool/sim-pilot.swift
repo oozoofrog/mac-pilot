@@ -11,7 +11,11 @@
 //   sim-pilot console --udid U --scheme S [--filter K] [--seconds N]
 //                                                       앱을 다시 실행하고 stdout·stderr를 본다 (끝나면 앱 종료)
 //   sim-pilot claim --udid U [--note 하는 일] [--force]  이 세션이 이 기기를 쓴다고 기록 (다른 세션이 쓰는 중이면 거절)
-//   sim-pilot release --udid U [--force]                기록을 지운다
+//   sim-pilot release --udid U [--to 세션] [--force]    기록을 지운다. --to: 기다리는 세션에 넘긴다
+//   sim-pilot request --udid U [--note 이유]            다른 세션이 쓰는 기기를 기다린다고 남긴다 (그 세션의 다음 명령에 보인다)
+//   sim-pilot decline --udid U [--from 세션] [--note 답] 내 기기에 온 요청을 거절한다
+//   sim-pilot requests                                  내게 온 요청과 내가 남긴 요청 (JSON)
+//   sim-pilot sessions                                  mac-cu·sim-pilot을 쓰는 에이전트 세션과 각자 쓰는 기기 (JSON)
 //   sim-pilot status                                    부팅된 기기마다 켜진 화면·방향과 사용 기록 (JSON, mac-cu 메뉴 막대와 같은 내용)
 //   sim-pilot claims                                    기기별 사용 기록 (JSON, 꺼진 기기·끝난 세션은 지운다)
 //   sim-pilot budget [--would-boot [--udid U] [--set default|previews]]
@@ -28,7 +32,7 @@
 
 import Foundation
 
-let version = "1.5.0"
+let version = "1.6.0"
 
 let schemes: [(name: String, bundle: String)] = [
     ("Inhouse(iTeam)-Debug", "com.kakao.iPart.Talk"),
@@ -262,69 +266,429 @@ func stream(_ arguments: [String], filter: String?, seconds: Int, environment: [
 // MARK: - 명령
 
 func devicesCommand() {
-    let claims = loadClaims(), mine = currentSession()
+    let state = store.state(booted: bootedSet())
     printJSON(bootedDevices().map { device -> [String: Any] in
         var row: [String: Any] = ["udid": device.udid, "name": device.name, "runtime": device.runtime]
-        if let claim = claims[device.udid] { row["claimed_by"] = claim.note.isEmpty ? claim.by : claim.note; row["mine"] = claim.by == mine.by }
+        if let claim = state.claims[device.udid.uppercased()] { row.merge(claimRow(claim, state.requests.filter { $0.udid == device.udid.uppercased() })) { _, new in new } }
         return row
     })
 }
 
-// MARK: - 기기 사용 기록
+// MARK: - 기기 사용 기록과 세션 협업
 //
-// 같은 Mac의 여러 세션(Claude Code·Codex)이 시뮬레이터를 함께 쓴다. 한 세션이 기기를 끄거나 접거나 설정을 바꾸면
-// 다른 세션의 작업이 깨지므로, 쓰는 세션이 기록을 남기고 다른 세션은 바꾸기 전에 그 기록을 본다.
+// 같은 Mac의 여러 에이전트 세션(Claude Code·Codex)이 시뮬레이터를 함께 쓴다. 한 세션이 기기를 끄거나 접거나 설정을 바꾸면
+// 다른 세션의 작업이 깨지므로, 쓰는 세션이 누구인지(에이전트·프로젝트·세션)와 함께 기록을 남기고, 다른 세션은 바꾸기 전에
+// 그 기록을 본다. 남이 쓰는 기기가 필요하면 요청을 남기고, 쓰던 세션이 놓거나 넘겨준다. mac-cu도 같은 파일을 읽고 쓴다.
 
-struct Claim: Codable { let by: String; let note: String; let pid: Int32; let since: String }
+// BEGIN simulator-collab-core
 
-let claimsURL = FileManager.default.homeDirectoryForCurrentUser
-    .appendingPathComponent("Library/Application Support/sim-pilot/claims.json")
+/// Who an agent session is: recorded with each device it uses, so that other sessions and the person see which agent
+/// of which project holds a simulator.
+struct AgentIdentity: Equatable {
+    /// "Claude Code", "Codex", or the app that runs the agent.
+    var agent: String
+    /// The agent's own session id, or "pid N" when the environment gives none.
+    var session: String
+    /// The folder name of the project, "" when unknown.
+    var project: String
+    /// The T3 thread, "" outside T3.
+    var thread: String
+    /// The process of the session: while it runs, its records count.
+    var pid: Int32
 
-/// The session that runs this command: Claude Code's session id and process, else the parent process.
-func currentSession() -> (by: String, pid: Int32) {
-    let env = ProcessInfo.processInfo.environment
-    let by = env["CLAUDE_CODE_HOST_SESSION_ID"] ?? env["CLAUDE_CODE_SESSION_ID"] ?? env["CODEX_SESSION_ID"] ?? "pid \(getppid())"
-    return (by, Int32(env["CLAUDE_PID"] ?? "") ?? getppid())
+    var label: String { project.isEmpty ? agent : "\(agent) · \(project)" }
+    /// The same session: by its id, or by its process. An agent can give a new id to a session that goes on (after
+    /// its context is cleared), and tools it started earlier still carry the old one.
+    func isSame(_ other: AgentIdentity) -> Bool { other.session == session || other.pid == pid }
+    func owns(_ claim: DeviceClaim) -> Bool { claim.by == session || claim.pid == pid }
+    var json: [String: Any] { ["agent": agent, "session": session, "project": project, "thread": thread, "pid": Int(pid)] }
+
+    init(agent: String, session: String, project: String = "", thread: String = "", pid: Int32) {
+        self.agent = agent; self.session = session; self.project = project; self.thread = thread; self.pid = pid
+    }
+
+    init?(json: [String: Any]) {
+        guard let session = json["session"] as? String, !session.isEmpty,
+              let pid = (json["pid"] as? NSNumber)?.int32Value, pid > 0 else { return nil }
+        self.init(agent: json["agent"] as? String ?? "?", session: session, project: json["project"] as? String ?? "",
+                  thread: json["thread"] as? String ?? "", pid: pid)
+    }
+
+    /// From the environment of a process that the agent started. `parent`: the process that started it.
+    /// `fallbackAgent`: the app that runs the agent, when the environment names no agent.
+    static func detect(environment env: [String: String], directory: String, parent: Int32, fallbackAgent: String? = nil) -> AgentIdentity {
+        let claude = env["CLAUDECODE"] != nil || env.keys.contains { $0.hasPrefix("CLAUDE_CODE_") }
+        let codex = env.keys.contains { $0.hasPrefix("CODEX_") }
+        let session = ["CLAUDE_CODE_HOST_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID", "CODEX_THREAD_ID"]
+            .lazy.compactMap { env[$0] }.first { !$0.isEmpty } ?? "pid \(parent)"
+        return AgentIdentity(agent: claude ? "Claude Code" : codex ? "Codex" : fallbackAgent ?? "terminal", session: session,
+                             project: collaborationProjectName(env["CLAUDE_PROJECT_DIR"] ?? directory),
+                             thread: env["T3CODE_THREAD_ID"] ?? "", pid: Int32(env["CLAUDE_PID"] ?? "") ?? parent)
+    }
 }
+
+/// The project a folder belongs to: the name of the nearest folder with .git at or above it, else of the folder.
+/// "" for the home folder and the root, which are not projects.
+func collaborationProjectName(_ directory: String) -> String {
+    let start = URL(fileURLWithPath: directory).standardizedFileURL
+    let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+    var url = start
+    for _ in 0..<32 where url.path != "/" && url.path != home {
+        if FileManager.default.fileExists(atPath: url.appendingPathComponent(".git").path) { return url.lastPathComponent }
+        url = url.deletingLastPathComponent()
+    }
+    return start.path == "/" || start.path == home ? "" : start.lastPathComponent
+}
+
+func collaborationStamp(_ date: Date) -> String { ISO8601DateFormatter().string(from: date) }
+func collaborationDate(_ text: String) -> Date? { ISO8601DateFormatter().date(from: text) }
+func collaborationProcessAlive(_ pid: Int32) -> Bool { pid > 0 && (kill(pid, 0) == 0 || errno == EPERM) }
+
+/// One record of claims.json. The first four fields are the format of sim-pilot 1.5 and earlier.
+struct DeviceClaim: Equatable {
+    var by: String
+    var note: String
+    var pid: Int32
+    var since: String
+    var agent = ""
+    var project = ""
+    var thread = ""
+    /// mac-cu wrote it when the session sent input to the device, without `sim-pilot claim`: it lapses when unused.
+    var auto = false
+    var lastUsed = ""
+
+    init(identity: AgentIdentity, note: String, auto: Bool, now: Date) {
+        by = identity.session; self.note = note; pid = identity.pid; since = collaborationStamp(now)
+        agent = identity.agent; project = identity.project; thread = identity.thread; self.auto = auto; lastUsed = since
+    }
+
+    init?(json: [String: Any]) {
+        guard let by = json["by"] as? String, let pid = (json["pid"] as? NSNumber)?.int32Value else { return nil }
+        self.by = by; self.pid = pid
+        note = json["note"] as? String ?? ""; since = json["since"] as? String ?? ""
+        agent = json["agent"] as? String ?? ""; project = json["project"] as? String ?? ""; thread = json["thread"] as? String ?? ""
+        auto = json["auto"] as? Bool ?? false; lastUsed = json["lastUsed"] as? String ?? since
+    }
+
+    var json: [String: Any] {
+        ["by": by, "note": note, "pid": Int(pid), "since": since, "agent": agent, "project": project, "thread": thread,
+         "auto": auto, "lastUsed": lastUsed]
+    }
+
+    /// The agent and project, or the session id of a record without them.
+    var who: String { agent.isEmpty ? by : project.isEmpty ? agent : "\(agent) · \(project)" }
+    /// "Claude Code · Cards · 로그인 확인"; a record of an older sim-pilot shows its note, else its session id.
+    var label: String { note.isEmpty ? who : agent.isEmpty ? note : "\(who) · \(note)" }
+}
+
+/// A session that waits for a device another session holds.
+struct DeviceRequest: Equatable {
+    var udid: String
+    var from: AgentIdentity
+    var note: String
+    var at: String
+    /// The holder's answer when it refused, "" while it has not.
+    var declined = ""
+
+    init(udid: String, from: AgentIdentity, note: String, now: Date) {
+        self.udid = udid.uppercased(); self.from = from; self.note = note; at = collaborationStamp(now)
+    }
+
+    init?(json: [String: Any]) {
+        guard let udid = json["udid"] as? String, let from = (json["from"] as? [String: Any]).flatMap(AgentIdentity.init(json:)) else { return nil }
+        self.udid = udid.uppercased(); self.from = from
+        note = json["note"] as? String ?? ""; at = json["at"] as? String ?? ""
+        declined = json["declined"] as? String ?? ""
+    }
+
+    var json: [String: Any] { ["udid": udid, "from": from.json, "note": note, "at": at, "declined": declined] }
+    var label: String { note.isEmpty ? from.label : "\(from.label) · \(note)" }
+}
+
+/// A claim that mac-cu wrote lapses this long after the session's last input.
+let collaborationAutoClaimIdle: TimeInterval = 30 * 60
+/// A request lapses this long after it was made.
+let collaborationRequestLifetime: TimeInterval = 30 * 60
+/// Times in the files are rewritten at most this often.
+let collaborationTouchInterval: TimeInterval = 60
+
+/// The claims that still count: of a running session, of a booted device (`booted` nil: not checked), and used
+/// lately when mac-cu wrote them.
+func liveClaims(_ all: [String: DeviceClaim], booted: Set<String>?, alive: (Int32) -> Bool, now: Date) -> [String: DeviceClaim] {
+    all.filter { udid, claim in
+        if let booted, !booted.contains(udid) { return false }
+        if claim.auto, let used = collaborationDate(claim.lastUsed), now.timeIntervalSince(used) > collaborationAutoClaimIdle { return false }
+        return alive(claim.pid)
+    }
+}
+
+/// The requests that still count: the requester runs, it asked lately, and another session still holds the device.
+func liveRequests(_ all: [DeviceRequest], claims: [String: DeviceClaim], alive: (Int32) -> Bool, now: Date) -> [DeviceRequest] {
+    all.filter { request in
+        guard alive(request.from.pid), let holder = claims[request.udid], !request.from.owns(holder) else { return false }
+        guard let asked = collaborationDate(request.at) else { return false }
+        return now.timeIntervalSince(asked) <= collaborationRequestLifetime
+    }
+}
+
+/// A session sent input to a device. Without a claim the device becomes the session's (an automatic claim); its own
+/// claim gets the time. Returns the other session that holds the device, when one does, and whether `claims` changed.
+func recordSimulatorUse(_ claims: inout [String: DeviceClaim], udid: String, identity: AgentIdentity, now: Date) -> (holder: DeviceClaim?, changed: Bool) {
+    let key = udid.uppercased()
+    guard var claim = claims[key] else {
+        claims[key] = DeviceClaim(identity: identity, note: "", auto: true, now: now)
+        return (nil, true)
+    }
+    guard identity.owns(claim) else { return (claim, false) }
+    if let used = collaborationDate(claim.lastUsed), now.timeIntervalSince(used) < collaborationTouchInterval { return (nil, false) }
+    claim.lastUsed = collaborationStamp(now)
+    claims[key] = claim
+    return (nil, true)
+}
+
+/// Notes that a session used mac-cu or sim-pilot (`via`). True when `sessions` changed. A session is one record,
+/// under the id it was first seen with; `session` in the record is the id it gave last.
+func touchSession(_ sessions: inout [String: [String: Any]], identity: AgentIdentity, via: String, now: Date) -> Bool {
+    let key = sessions[identity.session] != nil ? identity.session
+        : sessions.first { ($0.value["pid"] as? NSNumber)?.int32Value == identity.pid }?.key ?? identity.session
+    var entry = sessions[key] ?? ["firstSeen": collaborationStamp(now)]
+    var tools = entry["via"] as? [String] ?? []
+    if tools.contains(via), let seen = (entry["lastSeen"] as? String).flatMap(collaborationDate),
+       now.timeIntervalSince(seen) < collaborationTouchInterval { return false }
+    if !tools.contains(via) { tools.append(via) }
+    entry.merge(identity.json) { _, new in new }
+    entry["via"] = tools.sorted()
+    entry["lastSeen"] = collaborationStamp(now)
+    sessions[key] = entry
+    return true
+}
+
+/// The three files and their lock.
+struct CollaborationStore {
+    let folder: URL
+
+    /// ~/Library/Application Support/sim-pilot, or SIM_PILOT_STATE_DIR (the checks).
+    static var standard: CollaborationStore {
+        if let path = ProcessInfo.processInfo.environment["SIM_PILOT_STATE_DIR"], !path.isEmpty { return CollaborationStore(folder: URL(fileURLWithPath: path)) }
+        return CollaborationStore(folder: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/sim-pilot"))
+    }
+
+    private func read(_ name: String) -> Any? {
+        (try? Data(contentsOf: folder.appendingPathComponent(name))).flatMap { try? JSONSerialization.jsonObject(with: $0) }
+    }
+
+    private func write(_ name: String, _ object: Any) {
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]) else { return }
+        try? data.write(to: folder.appendingPathComponent(name), options: .atomic)
+    }
+
+    /// One reader-writer at a time, across mac-cu and sim-pilot.
+    func locked<T>(_ body: () throws -> T) rethrows -> T {
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let descriptor = open(folder.appendingPathComponent("state.lock").path, O_CREAT | O_RDWR, 0o644)
+        guard descriptor >= 0 else { return try body() }
+        defer { flock(descriptor, LOCK_UN); close(descriptor) }
+        flock(descriptor, LOCK_EX)
+        return try body()
+    }
+
+    private func storedClaims() -> [String: DeviceClaim] {
+        var claims: [String: DeviceClaim] = [:]
+        for (udid, value) in read("claims.json") as? [String: [String: Any]] ?? [:] { claims[udid.uppercased()] = DeviceClaim(json: value) }
+        return claims
+    }
+
+    private func storedRequests() -> [DeviceRequest] { (read("requests.json") as? [[String: Any]] ?? []).compactMap(DeviceRequest.init(json:)) }
+
+    /// Reads the live claims and requests, lets `body` change them, and writes what changed.
+    func update<T>(booted: Set<String>? = nil, now: Date = Date(), alive: (Int32) -> Bool = collaborationProcessAlive,
+                   _ body: (inout [String: DeviceClaim], inout [DeviceRequest]) throws -> T) rethrows -> T {
+        try locked {
+            let oldClaims = storedClaims(), oldRequests = storedRequests()
+            var claims = liveClaims(oldClaims, booted: booted, alive: alive, now: now)
+            var requests = liveRequests(oldRequests, claims: claims, alive: alive, now: now)
+            let result = try body(&claims, &requests)
+            requests = liveRequests(requests, claims: claims, alive: alive, now: now)
+            if claims != oldClaims { write("claims.json", claims.mapValues(\.json)) }
+            if requests != oldRequests { write("requests.json", requests.map(\.json)) }
+            return result
+        }
+    }
+
+    func state(booted: Set<String>? = nil, now: Date = Date()) -> (claims: [String: DeviceClaim], requests: [DeviceRequest]) {
+        update(booted: booted, now: now) { claims, requests in (claims, requests) }
+    }
+
+    /// The sessions that still run, after noting `identity` (nil: only read).
+    @discardableResult
+    func sessions(seen identity: AgentIdentity? = nil, via: String = "", now: Date = Date(),
+                  alive: (Int32) -> Bool = collaborationProcessAlive) -> [String: [String: Any]] {
+        locked {
+            let stored = read("sessions.json") as? [String: [String: Any]] ?? [:]
+            var sessions = stored.filter { alive(($0.value["pid"] as? NSNumber)?.int32Value ?? 0) }
+            var changed = sessions.count != stored.count
+            if let identity, touchSession(&sessions, identity: identity, via: via, now: now) { changed = true }
+            if changed { write("sessions.json", sessions) }
+            return sessions
+        }
+    }
+}
+
+// END simulator-collab-core
+
+let store = CollaborationStore.standard
+/// The session that runs this command.
+let me = AgentIdentity.detect(environment: ProcessInfo.processInfo.environment,
+                              directory: FileManager.default.currentDirectoryPath, parent: getppid())
+
+func bootedSet() -> Set<String> { Set(bootedDevices().map { $0.udid.uppercased() }) }
 
 /// The claims of booted devices whose session still runs. Others are dropped.
-func loadClaims() -> [String: Claim] {
-    guard let data = try? Data(contentsOf: claimsURL), let all = try? JSONDecoder().decode([String: Claim].self, from: data) else { return [:] }
-    let booted = Set(bootedDevices().map(\.udid))
-    let live = all.filter { booted.contains($0.key) && (kill($0.value.pid, 0) == 0 || errno == EPERM) }
-    if live.count != all.count { saveClaims(live) }
-    return live
+func loadClaims() -> [String: DeviceClaim] { store.state(booted: bootedSet()).claims }
+
+/// The fields a device row gets from its claim.
+func claimRow(_ claim: DeviceClaim, _ requests: [DeviceRequest]) -> [String: Any] {
+    var row: [String: Any] = ["claimed_by": claim.label, "since": claim.since, "mine": me.owns(claim), "session": claim.by]
+    if !claim.agent.isEmpty { row["agent"] = claim.agent }
+    if !claim.project.isEmpty { row["project"] = claim.project }
+    if claim.auto { row["auto"] = true }
+    let waiting = requests.filter { $0.declined.isEmpty }.map(\.label)
+    if !waiting.isEmpty { row["requested_by"] = waiting }
+    return row
 }
 
-func saveClaims(_ claims: [String: Claim]) {
-    try? FileManager.default.createDirectory(at: claimsURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-    let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-    try? encoder.encode(claims).write(to: claimsURL, options: .atomic)
-}
+func warn(_ message: String) { FileHandle.standardError.write(("sim-pilot: " + message + "\n").data(using: .utf8)!) }
 
 func claimCommand(_ options: Options) {
     let device = bootedDevice(options.require("udid"))
-    var claims = loadClaims()
-    let me = currentSession()
-    if let other = claims[device.udid], other.by != me.by, !options.flags.contains("force") {
-        fail("\(device.name)는 다른 세션이 쓰는 중입니다(\(other.note.isEmpty ? other.by : other.note), \(other.since)부터). 사용자에게 묻고, 함께 써도 된다고 하면 --force를 붙입니다.")
+    let udid = device.udid.uppercased(), force = options.flags.contains("force")
+    let other: DeviceClaim? = store.update(booted: bootedSet()) { claims, _ in
+        if let held = claims[udid], !me.owns(held), !force { return held }
+        var claim = claims[udid].flatMap { me.owns($0) ? $0 : nil } ?? DeviceClaim(identity: me, note: "", auto: false, now: Date())
+        claim.by = me.session
+        claim.auto = false
+        claim.lastUsed = collaborationStamp(Date())
+        if let note = options.values["note"] { claim.note = note }
+        claims[udid] = claim
+        return nil
     }
-    let since = ISO8601DateFormatter().string(from: Date())
-    claims[device.udid] = Claim(by: me.by, note: options.values["note"] ?? "", pid: me.pid, since: since)
-    saveClaims(claims)
-    print("\(device.name)를 이 세션이 쓴다고 기록했습니다. 끝나면 sim-pilot release --udid \(device.udid)")
+    if let other {
+        fail("\(device.name)는 다른 세션이 쓰는 중입니다(\(other.label), \(other.since)부터). 기다리려면 sim-pilot request --udid \(udid) --note \"<이유>\"로 요청을 남기고, 사용자가 함께 써도 된다고 하면 --force를 붙입니다.")
+    }
+    print("\(device.name)를 이 세션(\(me.label))이 쓴다고 기록했습니다. 끝나면 sim-pilot release --udid \(device.udid)")
 }
 
 func releaseCommand(_ options: Options) {
-    let udid = options.require("udid")
-    var claims = loadClaims()
-    guard let claim = claims[udid] else { print("기록이 없습니다."); return }
-    guard claim.by == currentSession().by || options.flags.contains("force") else {
-        fail("다른 세션의 기록입니다(\(claim.note.isEmpty ? claim.by : claim.note)). 지우려면 사용자에게 묻고 --force를 붙입니다.")
+    let udid = options.require("udid").uppercased(), force = options.flags.contains("force"), to = options.values["to"]
+    enum Outcome { case none, other(DeviceClaim), noRequest, handed(DeviceRequest), released([DeviceRequest]) }
+    let outcome: Outcome = store.update(booted: bootedSet()) { claims, requests in
+        guard let claim = claims[udid] else { return .none }
+        guard me.owns(claim) || force else { return .other(claim) }
+        let waiting = requests.filter { $0.udid == udid && $0.declined.isEmpty }
+        if let to {
+            let matches = waiting.filter { $0.from.session == to || $0.from.session.hasPrefix(to) }
+            guard matches.count == 1 else { return .noRequest }
+            claims[udid] = DeviceClaim(identity: matches[0].from, note: matches[0].note, auto: false, now: Date())
+            return .handed(matches[0])
+        }
+        claims[udid] = nil
+        return .released(waiting)
     }
-    claims[udid] = nil
-    saveClaims(claims)
-    print("기록을 지웠습니다.")
+    switch outcome {
+    case .none: print("기록이 없습니다.")
+    case .other(let claim): fail("다른 세션의 기록입니다(\(claim.label)). 지우려면 사용자에게 묻고 --force를 붙입니다.")
+    case .noRequest: fail("그 세션이 남긴 요청이 없습니다(--to \(to ?? "")). sim-pilot requests로 기다리는 세션을 확인하세요.")
+    case .handed(let request): print("기기를 \(request.label)에 넘겼습니다. 이 세션은 이제 이 기기를 바꾸지 않습니다.")
+    case .released(let waiting):
+        print("기록을 지웠습니다." + (waiting.isEmpty ? "" : " 기다리던 세션: " + waiting.map(\.label).joined(separator: ", ")))
+    }
+}
+
+/// The holder of a booted device, as JSON for the requester.
+func holderJSON(_ claim: DeviceClaim) -> [String: Any] {
+    ["label": claim.label, "agent": claim.agent, "project": claim.project, "session": claim.by, "note": claim.note, "since": claim.since, "auto": claim.auto]
+}
+
+func requestCommand(_ options: Options) {
+    let device = bootedDevice(options.require("udid"))
+    let udid = device.udid.uppercased()
+    let holder: DeviceClaim? = store.update(booted: bootedSet()) { claims, requests in
+        guard let claim = claims[udid], !me.owns(claim) else { return claims[udid] }
+        requests.removeAll { $0.udid == udid && $0.from.isSame(me) }
+        requests.append(DeviceRequest(udid: udid, from: me, note: options.values["note"] ?? "", now: Date()))
+        return claim
+    }
+    guard let holder else {
+        printJSON(["requested": false, "reason": "free", "udid": udid, "name": device.name])
+        warn("\(device.name)는 쓰는 세션이 없습니다. sim-pilot acquire --udid \(udid) --note \"<할 일>\"로 바로 쓰면 됩니다.")
+        return
+    }
+    guard !me.owns(holder) else { printJSON(["requested": false, "reason": "mine", "udid": udid, "name": device.name]); return }
+    printJSON(["requested": true, "udid": udid, "name": device.name, "holder": holderJSON(holder)])
+    warn("요청을 남겼습니다. \(holder.who) 세션의 다음 sim-pilot·mac-cu 호출에 보입니다. 놓을 때까지 기다리려면 sim-pilot acquire --udid \(udid) --wait <초>, 답은 sim-pilot requests로 봅니다.")
+}
+
+func declineCommand(_ options: Options) {
+    let udid = options.require("udid").uppercased(), from = options.values["from"]
+    let answer = options.values["note"] ?? "지금은 넘겨줄 수 없습니다"
+    let result: (holder: DeviceClaim?, count: Int) = store.update(booted: bootedSet()) { claims, requests in
+        guard let claim = claims[udid], me.owns(claim) || options.flags.contains("force") else { return (claims[udid], -1) }
+        var count = 0
+        for index in requests.indices where requests[index].udid == udid && requests[index].declined.isEmpty {
+            if let from, requests[index].from.session != from, !requests[index].from.session.hasPrefix(from) { continue }
+            requests[index].declined = answer
+            count += 1
+        }
+        return (claim, count)
+    }
+    if result.count < 0 { fail(result.holder.map { "다른 세션의 기기입니다(\($0.label)). 요청은 기기를 쓰는 세션이 답합니다." } ?? "이 기기에는 사용 기록이 없습니다.") }
+    print(result.count == 0 ? "답할 요청이 없습니다." : "요청 \(result.count)건을 거절했습니다: \(answer)")
+}
+
+func requestJSON(_ request: DeviceRequest, _ claims: [String: DeviceClaim], _ names: [String: String]) -> [String: Any] {
+    var row: [String: Any] = ["udid": request.udid, "name": names[request.udid] ?? "?", "from": request.from.json, "label": request.label,
+                              "note": request.note, "at": request.at, "status": request.declined.isEmpty ? "waiting" : "declined"]
+    if !request.declined.isEmpty { row["answer"] = request.declined }
+    if let holder = claims[request.udid] { row["holder"] = holderJSON(holder) }
+    return row
+}
+
+func requestsCommand() {
+    let state = store.state(booted: bootedSet())
+    let names = Dictionary(bootedDevices().map { ($0.udid.uppercased(), $0.name) }, uniquingKeysWith: { a, _ in a })
+    printJSON(["incoming": state.requests.filter { state.claims[$0.udid].map(me.owns) ?? false }.map { requestJSON($0, state.claims, names) },
+               "outgoing": state.requests.filter { $0.from.isSame(me) }.map { requestJSON($0, state.claims, names) }])
+}
+
+func sessionsCommand() {
+    let state = store.state(booted: bootedSet())
+    let names = Dictionary(bootedDevices().map { ($0.udid.uppercased(), $0.name) }, uniquingKeysWith: { a, _ in a })
+    var sessions = store.sessions()
+    // A session of an older sim-pilot has a claim and no session record.
+    for claim in state.claims.values where !sessions.values.contains(where: { $0["session"] as? String == claim.by || ($0["pid"] as? NSNumber)?.int32Value == claim.pid }) {
+        sessions[claim.by] = ["agent": claim.agent.isEmpty ? "?" : claim.agent, "session": claim.by, "project": claim.project,
+                              "thread": claim.thread, "pid": Int(claim.pid), "via": ["sim-pilot"], "firstSeen": claim.since, "lastSeen": claim.lastUsed]
+    }
+    printJSON(sessions.values.sorted { ($0["lastSeen"] as? String ?? "") > ($1["lastSeen"] as? String ?? "") }.map { session -> [String: Any] in
+        var row = session
+        let who = AgentIdentity(json: session) ?? AgentIdentity(agent: "?", session: session["session"] as? String ?? "", pid: 0)
+        row["mine"] = who.isSame(me)
+        row["devices"] = state.claims.filter { who.owns($0.value) }.sorted { $0.key < $1.key }.map { udid, claim -> [String: Any] in
+            ["udid": udid, "name": names[udid] ?? "?", "note": claim.note, "since": claim.since, "lastUsed": claim.lastUsed, "auto": claim.auto]
+        }
+        row["waitingFor"] = state.requests.filter { $0.from.isSame(who) && $0.declined.isEmpty }.map(\.udid)
+        return row
+    })
+}
+
+/// Tells the session that holds a device that another session waits for it. On stderr, so that JSON output stays whole.
+func noteIncomingRequests() {
+    let state = store.state()
+    for request in state.requests where request.declined.isEmpty && (state.claims[request.udid].map(me.owns) ?? false) {
+        warn("요청: \(request.label) 세션이 이 세션이 쓰는 기기 \(request.udid)를 기다립니다. 다 썼으면 sim-pilot release --udid \(request.udid) "
+             + "(바로 넘기려면 --to \(request.from.session)), 계속 써야 하면 sim-pilot decline --udid \(request.udid) --note \"<언제까지>\".")
+    }
 }
 
 // MARK: - 동시에 켜는 대수 제한
@@ -464,7 +828,7 @@ func readBudgetProcesses() -> [BudgetProcess] {
 }
 
 struct SimulatorOwner: Equatable {
-    /// "sim-pilot" (a claim), "agent-device" (a T3 Device panel session), "process" (a tool on the Mac that names the
+    /// "sim-pilot" (a claim), "mac-cu" (input a session sent through mac-cu, without a claim), "agent-device" (a T3 Device panel session), "process" (a tool on the Mac that names the
     /// device), "test-runner" (a UI test runner inside the device) or "lcd-window" (an open mac-cu window).
     let kind: String
     let by: String
@@ -656,17 +1020,19 @@ func budgetState() -> BudgetState {
     let config = SimulatorBudgetConfig.load()
     let all = simctlDevices(previews: false) + simctlDevices(previews: true)
     let booted = all.filter(\.booted).map(\.device)
-    let me = currentSession()
     let processes = readBudgetProcesses()
     let use = simulatorProcessUse(udids: booted.map(\.udid), processes: processes,
                                   ignoring: budgetProcessAncestors(of: getpid(), in: processes))
     let agents = readAgentDeviceOwners()
     var owners: [String: [SimulatorOwner]] = [:], mine: Set<String> = []
     for (udid, claim) in loadClaims() {
-        owners[udid.uppercased(), default: []].append(SimulatorOwner(kind: "sim-pilot", by: claim.note.isEmpty ? claim.by : claim.note, pid: claim.pid))
-        if claim.by == me.by { mine.insert(udid.uppercased()) }
+        owners[udid, default: []].append(SimulatorOwner(kind: claim.auto ? "mac-cu" : "sim-pilot", by: claim.label, pid: claim.pid))
+        if me.owns(claim) { mine.insert(udid) }
     }
-    for device in booted {
+    // The checks run two sessions against a device that other tools of this Mac may use: with this set, only the
+    // records count, so that a wait can end. Nothing is sent to the device either way.
+    let recordsOnly = ProcessInfo.processInfo.environment["SIM_PILOT_CHECK_RECORDS_ONLY"] != nil
+    for device in booted where !recordsOnly {
         owners[device.udid, default: []] += agents.owners[device.udid] ?? []
         let tools = use[device.udid]?.owners ?? []
         owners[device.udid, default: []] += tools
@@ -744,8 +1110,10 @@ func acquireCommand(_ options: Options) {
     let wantedUDID = options.values["udid"]?.uppercased(), wantedName = options.values["name"]
     guard (wantedUDID == nil) != (wantedName == nil) else { fail("--udid 또는 --name 중 하나가 필요합니다.") }
     let deadline = Date().addingTimeInterval(TimeInterval(options.int("wait", default: 0)))
-    let me = currentSession()
+    /// Set while the wanted device is another session's: what to print when the wait ends, and whether this command left a request.
+    var owned: [String: Any]?, requested: String?
     while true {
+        owned = nil
         // nil: the budget is full; try again while --wait lasts.
         let outcome: [String: Any]? = withBudgetLock {
             let state = budgetState()
@@ -758,16 +1126,38 @@ func acquireCommand(_ options: Options) {
             let pick = candidates.first { $0.booted && free($0.device.udid) } ?? candidates.first { !$0.booted } ?? candidates[0]
             let device = pick.device
             func claim() {
-                var claims = loadClaims()
-                claims[device.udid] = Claim(by: me.by, note: options.values["note"] ?? "", pid: me.pid, since: ISO8601DateFormatter().string(from: Date()))
-                saveClaims(claims)
+                store.update { claims, _ in
+                    var claim = claims[device.udid].flatMap { me.owns($0) ? $0 : nil } ?? DeviceClaim(identity: me, note: "", auto: false, now: Date())
+                    claim.by = me.session
+                    claim.auto = false
+                    claim.lastUsed = collaborationStamp(Date())
+                    if let note = options.values["note"] { claim.note = note }
+                    claims[device.udid] = claim
+                }
             }
             if pick.booted {
                 if !free(device.udid), !options.flags.contains("force") {
-                    printJSON(["acquired": false, "reason": "owned", "udid": device.udid, "name": device.name,
-                               "owners": (state.owners[device.udid] ?? []).map(\.json)])
-                    FileHandle.standardError.write("sim-pilot: \(device.name)는 다른 세션이 쓰는 중입니다. 사용자에게 묻고, 함께 써도 된다고 하면 --force를 붙입니다.\n".data(using: .utf8)!)
-                    exit(exitOwnedByOther)
+                    owned = ["acquired": false, "reason": "owned", "udid": device.udid, "name": device.name,
+                             "owners": (state.owners[device.udid] ?? []).map(\.json)]
+                    guard Date() < deadline else { return nil }
+                    // While it waits, the session that holds the device sees a request. A refusal ends the wait.
+                    let answer: String? = store.update { claims, requests in
+                        guard let holder = claims[device.udid], !me.owns(holder) else { return nil }
+                        if let mine = requests.first(where: { $0.udid == device.udid && $0.from.isSame(me) }) {
+                            return mine.declined.isEmpty ? nil : mine.declined
+                        }
+                        requests.append(DeviceRequest(udid: device.udid, from: me, note: options.values["note"] ?? "", now: Date()))
+                        requested = device.udid
+                        return nil
+                    }
+                    if let answer {
+                        owned?["reason"] = "declined"
+                        owned?["answer"] = answer
+                        printJSON(owned ?? [:])
+                        warn("\(device.name)를 쓰는 세션이 요청을 거절했습니다: \(answer)")
+                        exit(exitOwnedByOther)
+                    }
+                    return nil
                 }
                 claim()
                 return ["acquired": true, "booted": "already", "udid": device.udid, "name": device.name, "runtime": device.runtime]
@@ -779,6 +1169,13 @@ func acquireCommand(_ options: Options) {
             return ["acquired": true, "booted": "now", "udid": device.udid, "name": device.name, "runtime": device.runtime]
         }
         if let outcome { printJSON(outcome); return }
+        if let owned, Date() >= deadline {
+            // A request this command left goes with it; one from `sim-pilot request` stays.
+            if let requested { store.update { _, requests in requests.removeAll { $0.udid == requested && $0.from.isSame(me) } } }
+            printJSON(owned)
+            warn("\(owned["name"] as? String ?? "기기")는 다른 세션이 쓰는 중입니다. sim-pilot request로 요청을 남기거나 --wait <초>로 기다리고, 사용자가 함께 써도 된다고 하면 --force를 붙입니다.")
+            exit(exitOwnedByOther)
+        }
         guard Date() < deadline else {
             var json = budgetJSON(budgetState())
             json["acquired"] = false
@@ -787,7 +1184,7 @@ func acquireCommand(_ options: Options) {
             FileHandle.standardError.write("sim-pilot: 동시에 켤 수 있는 시뮬레이터가 꽉 찼습니다. 새로 켜지 말고, owned가 false인 켜진 기기를 쓰거나 기다리거나 사용자에게 알립니다.\n".data(using: .utf8)!)
             exit(exitBudgetFull)
         }
-        Thread.sleep(forTimeInterval: min(5, max(0.5, deadline.timeIntervalSinceNow)))
+        Thread.sleep(forTimeInterval: min(owned == nil ? 5 : 2, max(0.5, deadline.timeIntervalSinceNow)))
     }
 }
 
@@ -801,25 +1198,25 @@ func devicectlResult(_ udid: String, _ arguments: [String]) -> [String: Any]? {
 }
 
 func statusCommand() {
-    let claims = loadClaims(), me = currentSession().by
+    let state = store.state(booted: bootedSet())
     printJSON(bootedDevices().map { device -> [String: Any] in
         let screens = (devicectlResult(device.udid, ["info", "displays"])?["displays"] as? [[String: Any]] ?? [])
             .filter { ($0["type"] as? [String: Any])?["integrated"] != nil }
         let on = screens.count > 1 ? screens.first { $0["active"] as? Bool == true } : screens.first
         var row: [String: Any] = ["udid": device.udid, "name": device.name, "runtime": device.runtime, "screens": screens.count]
         if let on { row["screen"] = on["name"] as? String ?? "?"; row["orientation"] = on["currentOrientation"] as? String ?? "" }
-        if let claim = claims[device.udid] {
-            row["claimed_by"] = claim.note.isEmpty ? claim.by : claim.note; row["since"] = claim.since; row["mine"] = claim.by == me
-        }
+        if let claim = state.claims[device.udid.uppercased()] { row.merge(claimRow(claim, state.requests.filter { $0.udid == device.udid.uppercased() })) { _, new in new } }
         return row
     })
 }
 
 func claimsCommand() {
-    let me = currentSession().by
-    let names = Dictionary(bootedDevices().map { ($0.udid, $0.name) }, uniquingKeysWith: { a, _ in a })
-    printJSON(loadClaims().sorted { $0.key < $1.key }.map {
-        ["udid": $0.key, "name": names[$0.key] ?? "?", "by": $0.value.by, "note": $0.value.note, "since": $0.value.since, "mine": $0.value.by == me] as [String: Any]
+    let state = store.state(booted: bootedSet())
+    let names = Dictionary(bootedDevices().map { ($0.udid.uppercased(), $0.name) }, uniquingKeysWith: { a, _ in a })
+    printJSON(state.claims.sorted { $0.key < $1.key }.map { udid, claim -> [String: Any] in
+        var row = claimRow(claim, state.requests.filter { $0.udid == udid })
+        row.merge(["udid": udid, "name": names[udid] ?? "?", "by": claim.by, "note": claim.note, "lastUsed": claim.lastUsed]) { _, new in new }
+        return row
     })
 }
 
@@ -991,13 +1388,19 @@ let arguments = CommandLine.arguments
 guard arguments.count > 1 else {
     print("""
         sim-pilot \(version)
-          devices | schemes | launch | logs | console | photos | caps | status | claim | release | claims | budget | acquire | --version
+          devices | schemes | launch | logs | console | photos | caps | status | claim | release | claims | request | decline | requests
+          sessions | budget | acquire | --version
         자세한 사용법은 simulator-pilot 스킬 문서를 보세요.
         """)
     exit(0)
 }
 let flags: Set<String> = ["build", "reinstall", "debug", "grayscale", "yes", "allow-real", "force", "would-boot"]
 let options = Options(arguments.dropFirst(2), flags: flags)
+if !["--version", "version"].contains(arguments[1]) {
+    store.sessions(seen: me, via: "sim-pilot")
+    // budget is what hooks run before every boot: it stays quiet.
+    if !["budget", "requests", "decline", "release"].contains(arguments[1]) { noteIncomingRequests() }
+}
 switch arguments[1] {
 case "--version", "version": print(version)
 case "devices": devicesCommand()
@@ -1010,6 +1413,10 @@ case "caps": capsCommand(options)
 case "claim": claimCommand(options)
 case "release": releaseCommand(options)
 case "claims": claimsCommand()
+case "request": requestCommand(options)
+case "decline": declineCommand(options)
+case "requests": requestsCommand()
+case "sessions": sessionsCommand()
 case "status": statusCommand()
 case "budget": budgetCommand(options)
 case "acquire": acquireCommand(options)
