@@ -26,6 +26,7 @@ struct PhysicalDeviceInfo {
     let pairingState: String?
     /// The inventory's CoreDevice tunnel state ("connected", "disconnected", …); nil when not reported.
     var tunnelState: String? = nil
+    var hardwareUDID: String? = nil
 }
 
 /// Whether PhysicalDeviceSession's in-process CoreDevice calls may run in this process.

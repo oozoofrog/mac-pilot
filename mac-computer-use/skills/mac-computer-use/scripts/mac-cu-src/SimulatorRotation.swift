@@ -44,6 +44,15 @@ enum SimulatorOrientation: String, CaseIterable {
     }
 }
 
+/// iOS 26.5 reports unknown backlight even for a visible single LCD. Its geometry still identifies the input surface.
+func routedSimulatorDisplay(_ integrated: [[String: Any]]) -> [String: Any]? {
+    if let active = integrated.first(where: { $0["active"] as? Bool == true }) { return active }
+    guard integrated.count == 1, let only = integrated.first,
+          only["active"] == nil, only["backlightState"] as? String == "unknown",
+          only["primary"] as? Bool == true else { return nil }
+    return only
+}
+
 struct SimulatorRotationObservation: Equatable {
     let display: String
     let rotation: String
@@ -53,7 +62,7 @@ struct SimulatorRotationObservation: Equatable {
     /// screen, which cannot distinguish portrait from an unavailable readback.
     static func read(_ displays: [[String: Any]]) -> Self? {
         let integrated = displays.filter { ($0["type"] as? [String: Any])?["integrated"] != nil }
-        guard let active = integrated.first(where: { $0["active"] as? Bool == true }),
+        guard let active = routedSimulatorDisplay(integrated),
               let rotation = active["currentOrientation"] as? String,
               ["rot0", "rot90", "rot180", "rot270"].contains(rotation) else { return nil }
         return Self(display: String(describing: active["displayId"] ?? "main"), rotation: rotation,

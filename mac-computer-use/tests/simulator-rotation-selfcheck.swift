@@ -74,6 +74,13 @@ import CoreGraphics
             return d
         }
         assert(SimulatorRotationObservation.read([display("rot0")])?.inferredOrientation == .portrait)
+        var legacy = display("rot90")
+        legacy.removeValue(forKey: "active")
+        legacy["backlightState"] = "unknown"
+        assert(SimulatorRotationObservation.read([legacy])?.rotation == "rot90")
+        assert(routedSimulatorDisplay([legacy, legacy]) == nil)
+        legacy["active"] = false
+        assert(routedSimulatorDisplay([legacy]) == nil)
         assert(SimulatorRotationObservation.read([]) == nil)
         assert(SimulatorRotationObservation.read([display(nil)]) == nil)
         assert(SimulatorRotationObservation.read([display("unknown")]) == nil)

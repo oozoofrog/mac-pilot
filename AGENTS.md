@@ -1,5 +1,6 @@
 # AGENTS.md
 
+- MacPilot MUST NOT depend on third-party libraries, including libraries copied into the repository. Use project-owned code, standard libraries, and frameworks supplied by the operating system or Xcode.
 - Modify the canonical `mac-computer-use/` and `simulator-pilot/` packages directly; both marketplaces point to these directories. There is no `plugins/` mirror.
 - Use the skill-creator workflow for material skill changes. Keep trigger wording consistent across SKILL.md, manifests, UI metadata and README.md; keep long guidance in references/.
 - Preserve manifest-relative setup resources, original attribution, user profiles, Keychain entries, captures and simulator data.

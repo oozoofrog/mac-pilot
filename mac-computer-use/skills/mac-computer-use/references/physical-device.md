@@ -87,3 +87,29 @@ mac-cu links CoreDevice weakly and checks its symbols and types once per process
 Xcode differs, or Xcode is missing, the in-process path stays off: screenshots and device state then use `devicectl`
 (slower), and `list` says why. mac-cu does not use the device video stream that needs Apple-only entitlements;
 watching the screen goes through Device Hub.
+
+
+## Signed XCTest runner over USB
+
+Use a paired, unlocked development iPhone with Developer Mode enabled. Use Xcode and a local development signing identity with a provisioning profile valid for the device. From the skill directory, prepare the runner once. Keep the output directory available for subsequent sessions.
+
+```sh
+python3 scripts/physical-xctest/prepare.py --output "/path/to/build" --team "$DEVELOPMENT_TEAM"
+```
+
+Version 1.34.0 requires the USB socket runner. Run preparation again after updating from a mailbox prototype. One authenticated connection carries the commands and replies. The device list uses Xcode inventory for selection. Each command checks the lock state through CoreDevice.
+
+The build installs no software on the phone. Preparation registers the signed product on this Mac. The first `xctestStart` uses Xcode to install and run **MacPilot Runner**. Its icon comes from the MacPilot app. Rebuild after changing Xcode or updating the runner.
+
+Use the same MCP connection for these `device` calls. Replace `DEVICE_UUID` with the CoreDevice identifier from `device list`. Poll status until it returns `ready`.
+
+```jsonl
+{"action":"allow","device":"DEVICE_UUID"}
+{"action":"xctestStart","device":"DEVICE_UUID"}
+{"action":"xctestStatus","device":"DEVICE_UUID"}
+{"action":"xctestPing","device":"DEVICE_UUID"}
+{"action":"xctestStop","device":"DEVICE_UUID"}
+{"action":"release","device":"DEVICE_UUID"}
+```
+
+For app interaction, include the app bundle ID in the `app` field of `xctestStart`. Only `xctestActivate` explicitly launches or activates that app. `xctestDescribe` returns a bounded accessibility tree. Pass an exact accessibility identifier in `target` for `xctestWait`, `xctestTap` or `xctestType`. Wait accepts `seconds` from 0 to 10. Tap requires one hittable match. Type accepts `text` up to 200 characters in one plain text field. After input, check the effect with wait or describe. Stop the session if delivery is uncertain. A runner expires after 120 seconds without commands or 15 minutes in total.

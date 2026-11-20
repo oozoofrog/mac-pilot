@@ -20,7 +20,7 @@ func displays(of id: String, task: SimulatorPreparationTask? = nil) -> [[String:
 
 func normalizeSimulatorDisplay(_ display: [String: Any]) -> [String: Any] {
     var result = display
-    if result["active"] == nil, let state = result["backlightState"] as? String {
+    if result["active"] == nil, let state = result["backlightState"] as? String, state != "unknown" {
         result["active"] = state == "activeOn"
     }
     return result

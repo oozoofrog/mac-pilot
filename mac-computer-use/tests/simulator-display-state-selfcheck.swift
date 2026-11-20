@@ -33,6 +33,7 @@ struct SimulatorDisplayStateSelfcheck {
         assert(normalizeSimulatorDisplay(["backlightState": "off"])["active"] as? Bool == false)
         assert(normalizeSimulatorDisplay(["active": false, "backlightState": "activeOn"])["active"] as? Bool == false)
         assert(normalizeSimulatorDisplay([:])["active"] == nil)
+        assert(normalizeSimulatorDisplay(["backlightState": "unknown"])["active"] == nil)
         #if !DISPLAY_RACE_ONLY
         assert(!simulatorCommandNeedsActiveScreen("button"))
         assert(!simulatorCommandNeedsActiveScreen("crown"))

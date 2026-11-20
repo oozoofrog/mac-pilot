@@ -26,6 +26,23 @@ let currentSession: SessionStub? = nil
         precondition(listing.contains("| iOS 27 |") && !listing.contains("iOS iOS"))
         func call(_ action: String, _ id: String, _ extra: [String: Any] = [:]) throws { var args = extra; args["action"] = action; args["device"] = id; _ = try tool.call(args) }
         func refuses(_ body: () throws -> Void) { do { try body(); fatalError("expected refusal") } catch {} }
+        var xctestBackend = backend
+        xctestBackend.list = {
+            [PhysicalDeviceInfo(identifier: a, name: "same", model: nil, osVersion: nil, transport: "wired", connectionState: "Connected", pairingState: "paired", hardwareUDID: "wired-A"),
+             PhysicalDeviceInfo(identifier: b, name: "same", model: nil, osVersion: nil, transport: "localNetwork", connectionState: "Connected", pairingState: "paired", hardwareUDID: "wireless-B")]
+        }
+        xctestBackend.xctestLocked = { _ in locked }
+        let xctest = DeviceTool(xctestBackend)
+        _ = try xctest.call(["action": "allow", "device": a.uuidString])
+        precondition(xctest.wiredHardwareUDID == "wired-A")
+        try xctest.checkXCTestAccess(a)
+        locked = true
+        refuses { try xctest.checkXCTestAccess(a) }
+        locked = false
+        refuses { try xctest.checkXCTestAccess(b) }
+        _ = try xctest.call(["action": "allow", "device": b.uuidString])
+        refuses { try xctest.checkXCTestAccess(b) }
+        precondition(xctest.wiredHardwareUDID == nil)
         refuses { try call("tap", a.uuidString, ["x": 1, "y": 1]) }
         refuses { try call("allow", "same") }
         try call("allow", a.uuidString)

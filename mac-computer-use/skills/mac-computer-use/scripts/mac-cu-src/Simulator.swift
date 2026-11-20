@@ -372,10 +372,16 @@ func activeScreen(of device: NSObject, readback: [[String: Any]]? = nil) throws 
 func simulatorScreen(_ displays: [[String: Any]], targets: [String: UInt64], pose: SimulatorOrientation?) throws -> ActiveScreen? {
     let integrated = displays.filter { ($0["type"] as? [String: Any])?["integrated"] != nil }
     guard !integrated.isEmpty else { return nil }
-    guard let on = integrated.first(where: { $0["active"] as? Bool == true }),
-          let bounds = on["bounds"] as? [[NSNumber]], bounds.count == 2, bounds[1].count == 2,
-          let scale = (on["pointScale"] as? NSNumber)?.doubleValue, scale > 0 else {
+    guard let on = routedSimulatorDisplay(integrated) else {
+        if integrated.contains(where: { $0["active"] == nil }) {
+            throw ToolError("CoreDevice could not identify the active simulator screen.")
+        }
         throw ToolError("No screen of the simulator is on. Press the lock button to wake it, then try again.")
+    }
+    guard let bounds = on["bounds"] as? [[NSNumber]], bounds.count == 2, bounds[1].count == 2,
+          bounds[1].allSatisfy({ $0.doubleValue > 0 }),
+          let scale = (on["pointScale"] as? NSNumber)?.doubleValue, scale > 0 else {
+        throw ToolError("CoreDevice did not return valid simulator screen dimensions.")
     }
     let foldable = integrated.count > 1
     let rotation = on["currentOrientation"] as? String ?? "rot0"

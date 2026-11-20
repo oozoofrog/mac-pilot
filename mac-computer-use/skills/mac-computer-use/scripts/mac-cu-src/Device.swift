@@ -17,6 +17,7 @@ struct DeviceBackend {
     var endSessions: (UUID?) -> Void = { _ in }
     /// A line for list about how screenshots and state are read, when it matters (fallback mode).
     var status: () -> String? = { nil }
+    var xctestLocked: ((UUID) throws -> Bool)?
 }
 
 final class DeviceTool {
@@ -29,6 +30,7 @@ final class DeviceTool {
         }
     }
     private var allowed: UUID?
+    private(set) var wiredHardwareUDID: String?
     private let backend: DeviceBackend
     init(_ backend: DeviceBackend) { self.backend = backend }
 
@@ -42,6 +44,13 @@ final class DeviceTool {
         if let transport = device.transport, transport != "wired", device.pairingState == "paired" { return nil }
         return "\(device.connectionState ?? device.tunnelState ?? "unknown state"). Connect it with a USB cable, or keep it unlocked " +
             "with Wi-Fi on the same network as this Mac (paired before over USB), then retry"
+    }
+
+    func checkXCTestAccess(_ id: UUID) throws {
+        guard allowed == id else { throw ToolError("Allow this physical device first.") }
+        guard wiredHardwareUDID != nil else { throw ToolError("Allow the selected paired iPhone over USB.") }
+        guard let readLock = backend.xctestLocked else { throw ToolError("The in-process XCTest lock check is unavailable.") }
+        guard try !readLock(id) else { throw ToolError("Unlock the iPhone before using XCTest.") }
     }
 
     func call(_ args: [String: Any]) throws -> [String: Any] {
@@ -59,6 +68,7 @@ final class DeviceTool {
         guard known.contains(action) else { throw ToolError("Unknown device action: \(action).") }
         if action == "release" {
             allowed = nil
+            wiredHardwareUDID = nil
             backend.endSessions(nil)
             return text("Physical device permission released. Device Hub, if open, stays open; mac-cu never closes it.")
         }
@@ -70,6 +80,7 @@ final class DeviceTool {
             if let problem = Self.connectionProblem(found) { throw PhysicalDeviceError.unavailable(problem) }
             if let previous = allowed, previous != id { backend.endSessions(previous) }
             allowed = id
+            wiredHardwareUDID = found.transport == "wired" ? found.hardwareUDID : nil
             return text("Allowed \(id.uuidString) (\(found.transport.map(Self.transportName) ?? "unknown transport")) for this server process.")
         }
         guard allowed == id else { throw ToolError("Device \(id.uuidString) is not allowed. Run device allow with device set to this identifier first.") }
@@ -297,7 +308,7 @@ private func physicalBackend() -> DeviceBackend {
                                       osVersion: own?.osVersion ?? (device?["osVersionNumber"] as? String).map { "iOS \($0)" },
                                       transport: transport,
                                       connectionState: own?.connectionState ?? (tunnel == "connected" ? "Connected" : tunnel.map { "tunnel \($0)" }),
-                                      pairingState: connection?["pairingState"] as? String, tunnelState: tunnel)
+                                      pairingState: connection?["pairingState"] as? String, tunnelState: tunnel, hardwareUDID: hardware?["udid"] as? String)
         }
     }, locked: { id in
         // The rule is that mac-cu never enters a passcode. A device without a passcode reports false even
@@ -330,6 +341,9 @@ private func physicalBackend() -> DeviceBackend {
         try deviceHubView(id, name: name, focus: focus, launcher: .system)
     }, endSessions: { sessions.end($0) }, status: {
         sessions.unavailableReason.map { "In-process CoreDevice is off (\($0)); screenshots and device state use devicectl (slower)." }
+    }, xctestLocked: { id in
+        guard let session = sessions.session(id) else { throw ToolError("XCTest requires the in-process CoreDevice lock check.") }
+        return try physicalBlocking(8, "the XCTest lock state") { try await session.lockState() }
     })
 }
 
@@ -351,5 +365,5 @@ private func portraitDisplay(_ info: [String: Any]) -> (points: CGSize, pixels: 
     return (CGSize(width: pixels.width / scale, height: pixels.height / scale), pixels)
 }
 
-private let physicalDeviceTool = DeviceTool(physicalBackend())
+let physicalDeviceTool = DeviceTool(physicalBackend())
 func deviceTool(_ arguments: [String: Any]) throws -> [String: Any] { try physicalDeviceTool.call(arguments) }

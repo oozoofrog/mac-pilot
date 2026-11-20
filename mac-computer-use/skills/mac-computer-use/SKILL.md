@@ -21,7 +21,8 @@ description: Operate Mac apps, browser pages, iOS web views and physical iPhones
   Safari, and inspects WKWebView and Safari pages.
 - Physical iPhones: the `device` tool takes screenshots of a connected iPhone and sends touches,
   keys and buttons to it over CoreDevice, without the Mac's pointer or keyboard. It needs Xcode. The
-  user watches the screen in Xcode's Device Hub, which `device` opens at that iPhone.
+  user watches the screen in Xcode's Device Hub, which `device` opens at that iPhone. A locally signed
+  MacPilot Runner adds XCTest accessibility queries and element input over USB.
 
 ## 1. Setup check
 

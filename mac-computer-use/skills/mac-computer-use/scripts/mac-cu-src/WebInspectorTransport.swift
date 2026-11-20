@@ -271,6 +271,15 @@ func runTool(_ path: String, _ args: [String], input: Data? = nil) throws -> Dat
 enum Usbmux {
     static let path = "/var/run/usbmuxd"
 
+    private static func setHandshakeTimeout(_ stream: FDStream, seconds: Int) throws {
+        var timeout = timeval(tv_sec: seconds, tv_usec: 0)
+        for option in [SO_RCVTIMEO, SO_SNDTIMEO] {
+            guard setsockopt(stream.fd, SOL_SOCKET, option, &timeout, socklen_t(MemoryLayout.size(ofValue: timeout))) == 0 else {
+                throw InspectorError("Cannot set the USB socket timeout.")
+            }
+        }
+    }
+
     private static func send(_ s: FDStream, _ msg: [String: Any]) throws {
         var m = msg
         m["ClientVersionString"] = "mac-cu"
@@ -284,6 +293,7 @@ enum Usbmux {
     private static func recv(_ s: FDStream) throws -> [String: Any] {
         let h = try s.readExactly(16)
         let len = Int(UInt32(littleEndian: h.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }))
+        guard (16...16_777_216).contains(len) else { throw InspectorError("Invalid usbmuxd reply length.") }
         let body = try s.readExactly(len - 16)
         return try PropertyListSerialization.propertyList(from: body, format: nil) as? [String: Any] ?? [:]
     }
@@ -292,6 +302,7 @@ enum Usbmux {
     private static func call(_ msg: [String: Any]) throws -> [String: Any] {
         let s = try FDStream.unix(path)
         defer { s.close() }
+        try setHandshakeTimeout(s, seconds: 5)
         try send(s, msg)
         return try recv(s)
     }
@@ -310,11 +321,19 @@ enum Usbmux {
 
     /// After the connection, the stream is a raw tunnel to the port of the device.
     static func connect(_ dev: MuxDevice, port: UInt16) throws -> FDStream {
+        guard let stream = try connectIfListening(dev, port: port) else { throw InspectorError("The device refused port \(port).") }
+        return stream
+    }
+
+    static func connectIfListening(_ dev: MuxDevice, port: UInt16) throws -> FDStream? {
         let s = try FDStream.unix(path)
         do {
+            try setHandshakeTimeout(s, seconds: 5)
             try send(s, ["MessageType": "Connect", "DeviceID": dev.id, "PortNumber": Int(port.byteSwapped)])
             let r = try recv(s)
+            if r["Number"] as? Int == 3 { s.close(); return nil }
             guard r["Number"] as? Int == 0 else { throw InspectorError("The device refused port \(port) (usbmuxd code \(r["Number"] ?? "?")).") }
+            try setHandshakeTimeout(s, seconds: 0)
             return s
         } catch { s.close(); throw error }
     }

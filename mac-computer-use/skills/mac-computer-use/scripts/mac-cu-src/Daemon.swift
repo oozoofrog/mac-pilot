@@ -62,6 +62,8 @@ func exchange(_ fd: Int32, _ message: [String: Any]) -> [String: Any]? {
 /// An agent session. approvedApps: the apps the user allowed for this session ("until the session ends").
 final class AgentSession {
     let activityID = UUID()
+    var physicalTestEnd: (device: UUID, reason: String)?
+    var physicalTestAllowed: UUID?
     let fd: Int32
     var agent = "?"
     var version = ""
@@ -115,6 +117,7 @@ let handleQueue = DispatchQueue(label: "mac-cu.handle", autoreleaseFrequency: .w
 var menuBar: MenuBar?
 
 func quitDaemon() -> Never {
+    PhysicalXCTestSession.daemonWillExit()
     // A paste's restore timer would not run after exit: put the user's pasteboard back now.
     if Thread.isMainThread { pasteboardRestore?.perform() } else { DispatchQueue.main.sync { pasteboardRestore?.perform() } }
     if Bundle.main.bundleIdentifier == daemonBundleID { unlink(daemonSocket.path) }
@@ -223,6 +226,7 @@ func serve(_ fd: Int32, host: String?) {
         return true
     }
     connection.disconnect()
+    handleQueue.async { endPhysicalXCTest(owner: connection.activityID) }
     connectionsLock.lock()
     connections.removeAll { $0 === connection }
     connectionsLock.unlock()
