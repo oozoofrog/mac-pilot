@@ -15,7 +15,7 @@ final class WatchXCTestFiles {
         let linked = UnsafeMutableRawPointer(bitPattern: -2)
         guard watchFileSymbols.allSatisfy({ dlsym(linked, $0) != nil }),
               let descriptor = dlsym(linked, "$s10CoreDevice21TransferFilesProtocolMp"),
-              (descriptor.load(as: UInt32.self) >> 16) & 1 == 0,
+              !PhysicalDeviceLink.protocolIsClassBound(descriptor),
               #_hasSymbol(TransferFilesCapability.self), #_hasSymbol(FileServicePath.self),
               #_hasSymbol(DeviceFileSystemNode.self), #_hasSymbol(FileServicePath.init(domain:relativePath:directoryTransferOptions:)),
               #_hasSymbol(CapabilityStaticMember<TransferFilesCapability>.remoteFileTransfer),

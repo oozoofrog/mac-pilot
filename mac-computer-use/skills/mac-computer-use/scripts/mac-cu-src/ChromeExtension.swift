@@ -29,11 +29,13 @@ func withAddress<T>(_ socket: URL, _ body: (UnsafePointer<sockaddr>, socklen_t) 
 }
 
 /// Reads JSON lines from a socket until it closes or `each` returns false.
-func readLines(_ fd: Int32, _ each: (Data) -> Bool) {
+func readLines(_ fd: Int32, beforeReadAtBoundary: (() -> Void)? = nil, _ each: (Data) -> Bool) {
     var buffer = Data()
     var chunk = [UInt8](repeating: 0, count: 65536)
     while true {
+        if buffer.isEmpty { beforeReadAtBoundary?() }
         let count = read(fd, &chunk, chunk.count)
+        if count < 0 && errno == EINTR { continue }
         if count <= 0 { return }
         buffer.append(contentsOf: chunk[0..<count])
         while let newline = buffer.firstIndex(of: 0x0a) {

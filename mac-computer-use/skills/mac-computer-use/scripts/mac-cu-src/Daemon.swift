@@ -670,6 +670,8 @@ func connectDaemon(hello: [String: Any]) -> Int32? {
 /// The MCP stdio server that the agent starts: lines go to the daemon and its lines come back.
 func runClient() -> Never {
     signal(SIGPIPE, SIG_IGN)
+    let installedPath = daemonBundle.appendingPathComponent("Contents/MacOS/mac-cu").path
+    let startedFromInstallation = executablePath(of: getpid()) == installedPath
     let apps = parentApps()
     let agent = (apps.first(where: hasIcon) ?? apps.first).map { $0.deletingPathExtension().lastPathComponent } ?? "terminal"
     let env = ProcessInfo.processInfo.environment.filter { DecisionSettings.environmentNames.contains($0.key) }
@@ -696,21 +698,36 @@ func runClient() -> Never {
         }
         return fd
     }
-    while let line = readLine(strippingNewline: true) { autoreleasepool {
+    func checkInstallationBeforeRead() {
+        var input = pollfd(fd: STDIN_FILENO, events: Int16(POLLIN), revents: 0)
+        while poll(&input, 1, -1) < 0 && errno == EINTR {}
+        guard input.revents & Int16(POLLIN) != 0, startedFromInstallation else { return }
+        lock.lock()
+        let disconnected = socket == nil
+        lock.unlock()
+        guard disconnected, executablePath(of: getpid()) != installedPath else { return }
+        installedPath.withCString { path in
+            var arguments: [UnsafeMutablePointer<CChar>?] = [UnsafeMutablePointer(mutating: path), nil]
+            _ = execv(path, &arguments)
+        }
+        perror("mac-cu could not reload its installed MCP client")
+    }
+    readLines(STDIN_FILENO, beforeReadAtBoundary: checkInstallationBeforeRead) { line in
         var sent = false
         for _ in 0..<2 where !sent {
             guard let fd = connection() else { break }
-            sent = writeAll(fd, Data(line.utf8) + Data([0x0a]))
+            sent = writeAll(fd, line + Data([0x0a]))
             if !sent {
                 lock.lock()
                 if socket == fd { socket = nil }
                 lock.unlock()
             }
         }
-        if !sent, let id = (try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])?["id"] {
+        if !sent, let id = (try? JSONSerialization.jsonObject(with: line) as? [String: Any])?["id"] {
             _ = writeLine(1, ["jsonrpc": "2.0", "id": id, "error": ["code": -32000, "message": "mac-cu could not reach its daemon (see stderr). Run setup.py."]])
         }
-    } }
+        return true
+    }
     exit(0)
 }
 

@@ -16,6 +16,8 @@ After the owner woke the watch, Xcode reported `activeOn` and `passcodeRequired:
 
 The paired watch ran the development-signed watchOS test bundle on Xcode 27.2. The runner returned an authenticated pong, activated Calculator, read its XCTest accessibility snapshot, found a calculator button by its exact label and exited cleanly. The calculator's digit buttons had labels and empty identifiers. A device file transfer initially lost its completion acknowledgement because the runner removed the request before CoreDevice finished inspecting it. Keeping the current request until the next authenticated command allowed consecutive commands to complete.
 
+On the watchOS 27.2 simulator, the same runner activated Calculator, tapped the button labeled `7` and read its accessible result changing from `공` to `칠`. Tapping `삭제` restored the initial value.
+
 ## iPhone status (2026-11-14)
 
 | Area | Status |

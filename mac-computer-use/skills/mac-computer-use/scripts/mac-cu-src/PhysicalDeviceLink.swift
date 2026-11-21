@@ -81,6 +81,10 @@ final class PhysicalDeviceLink {
     /// (descriptor flag bit 16 set). A class-bound one would change the existential layout.
     static let openProtocols = ["$s10CoreDevice25CaptureScreenshotProtocolMp", "$s10CoreDevice17LockStateProtocolMp",
                                 "$s10CoreDevice19DisplayInfoProtocolMp", "$s10CoreDevice0B18CapabilityProtocolMp"]
+    static func protocolIsClassBound(_ descriptor: UnsafeMutableRawPointer) -> Bool {
+        descriptor.load(as: UInt32.self) & (1 << 16) == 0
+    }
+
     private let openFramework: OpenFramework
     private let findSymbol: FindSymbol
     private let imagesBound: () -> Bool
@@ -109,7 +113,7 @@ final class PhysicalDeviceLink {
         // This executable's own weak bindings: the framework may open by path although it was not there at launch.
         guard imagesBound() else { throw PhysicalDeviceError.frameworkMissing("\(Self.path) (not bound at launch)") }
         guard let descriptor = findSymbol(handle, "$s7Mercury17XPCPeerConnectionMp"),
-              (descriptor.load(as: UInt32.self) >> 16) & 1 == 0 else {
+              Self.protocolIsClassBound(descriptor) else {
             throw PhysicalDeviceError.unavailable("unsupported Mercury peer ABI")
         }
         return handle
@@ -133,7 +137,7 @@ final class PhysicalDeviceLink {
             let handle = try checkedHandle()
             if let missing = Self.inProcessSymbols.first(where: { findSymbol(handle, $0) == nil }) {
                 result = .unavailable("CoreDevice symbol missing: \(missing). The installed Xcode differs from the one mac-cu was built for.")
-            } else if let bound = Self.openProtocols.first(where: { (findSymbol(handle, $0)!.load(as: UInt32.self) >> 16) & 1 != 1 }) {
+            } else if let bound = Self.openProtocols.first(where: { Self.protocolIsClassBound(findSymbol(handle, $0)!) }) {
                 result = .unavailable("CoreDevice protocol \(bound) became class-bound. The installed Xcode differs from the one mac-cu was built for.")
             } else if let mismatch = protocolTypeMismatch() {
                 result = .unavailable("CoreDevice ABI changed: \(mismatch).")

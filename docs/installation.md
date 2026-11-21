@@ -17,6 +17,8 @@ Simulator Pilot builds its Swift CLI into `~/.local/bin/sim-pilot`. Xcode and th
 
 The local MCP app, enabled Plugin, installed skill path and fresh-session tool list are separate. Start a new chat after changing Plugins or MCP registration. Confirm the new installed skill path and `decide` tool's OpenAI description. Key-based Decisions connectivity can be checked with synthetic text; do not send private windows as a connection test.
 
+After the installed app is replaced, an idle MCP stdio client must use the new executable for its next connection. The daemon must still verify the executable path of each peer. A restarted daemon starts a new device session. Select the device again before sending input. Clients started with an older build that reports `mac-cu could not reach its daemon` need one fresh MCP connection to load this recovery behavior.
+
 ## Local delivery after development
 
 The workspace user has given standing authorization to build and replace the global mac-cu app after completed implementation work, so they can verify it. Complete isolated source/UI checks first; this is a delivery step, not a substitute for those checks.
