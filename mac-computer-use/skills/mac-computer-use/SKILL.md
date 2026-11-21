@@ -1,6 +1,6 @@
 ---
 name: mac-computer-use
-description: Operate Mac apps, browser pages, iOS web views and physical iPhones with the mac-cu MCP server. Use for desktop UI tasks without a better API or CLI, web view inspection, input and screenshots on a connected iPhone, or mac-cu setup, modes and simulator preparation. Route iOS Simulator app launch, logs, test data and change verification through simulator-pilot.
+description: Operate Mac apps, browser pages, iOS web views, physical iPhones and Apple Watch with the mac-cu MCP server. Use for desktop UI tasks without a better API or CLI, web view inspection, input and screenshots on a connected iPhone or paired Apple Watch, or mac-cu setup, modes and simulator preparation. Route iOS Simulator app launch, logs, test data and change verification through simulator-pilot.
 ---
 
 # Mac Computer Use for Claude Code and Codex
@@ -19,6 +19,7 @@ description: Operate Mac apps, browser pages, iOS web views and physical iPhones
   closed. It needs no other tool (no AXe or idb).
 - iOS web views: it connects to the Web Inspector of booted simulators and USB devices without
   Safari, and inspects WKWebView and Safari pages.
+- Physical Apple Watch: select its own UUID with `device allow`, then use a signed watchOS runner with `xctestStart` for accessibility and element input. Use `screenshot`, `tap` or `swipe` for coordinate work. See [physical device](references/physical-device.md).
 - Physical iPhones: the `device` tool takes screenshots of a connected iPhone and sends touches,
   keys and buttons to it over CoreDevice, without the Mac's pointer or keyboard. It needs Xcode. The
   user watches the screen in Xcode's Device Hub, which `device` opens at that iPhone. A locally signed

@@ -105,3 +105,18 @@ extension RemoteDevice {
     public var description: String { fatalError() }
     public func acquireDeviceUsageAssertion(withReason reason: String, requirements: UsageAssertionRequirements) async throws -> DeviceUsageAssertion { fatalError() }
 }
+
+public final class DetailedOperation<Result> {
+    public var result: Result { get async throws { fatalError() } }
+}
+public protocol TransferFilesProtocol: DeviceCapabilityProtocol {
+    func send(to: FileServicePath, from: [URL]) async throws -> DetailedOperation<DeviceFileSystemNode>
+    func receive(from: FileServicePath, to: URL) async throws -> DetailedOperation<URL>
+}
+public struct TransferFilesCapability: DeviceCapability {
+    public typealias ImplType = Void
+    public typealias ProtocolType = any TransferFilesProtocol
+}
+extension CapabilityStaticMember where A: DeviceCapability {
+    public static var remoteFileTransfer: CapabilityStaticMember<TransferFilesCapability> { fatalError() }
+}

@@ -27,6 +27,7 @@ struct PhysicalDeviceInfo {
     /// The inventory's CoreDevice tunnel state ("connected", "disconnected", …); nil when not reported.
     var tunnelState: String? = nil
     var hardwareUDID: String? = nil
+    var isAppleWatch = false
 }
 
 /// Whether PhysicalDeviceSession's in-process CoreDevice calls may run in this process.

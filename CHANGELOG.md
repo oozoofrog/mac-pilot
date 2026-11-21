@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- 실물 Apple Watch에서 개발 서명한 watchOS XCTest 러너로 앱 활성화, 접근성 트리 조회, 요소 대기와 입력을 실행할 수 있다.
+
+- 페어링된 실물 Apple Watch를 `device`에서 선택하고 워치 화면을 캡처하거나 좌표로 탭·스와이프할 수 있다.
+
 ## 1.4.0 — 2026-11-21
 
 mac-computer-use 1.34.0, simulator-pilot 1.10.0.

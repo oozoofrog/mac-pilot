@@ -14,7 +14,25 @@ struct XCTestSocket {
     let fd: Int32
     let key: SymmetricKey
 
-    enum Direction: UInt8 { case request = 1, reply = 2 }
+    enum Direction: UInt8 {
+        case request = 1, reply = 2
+        var limit: Int { self == .request ? 16_384 : 1_048_576 }
+    }
+
+    static func frame(_ data: Data, as direction: Direction, key: SymmetricKey) throws -> Data {
+        guard data.count <= direction.limit - 28,
+              let body = try AES.GCM.seal(data, using: key, authenticating: [direction.rawValue]).combined else { throw XCTestSocketError.frame }
+        var length = UInt32(body.count).bigEndian
+        return withUnsafeBytes(of: &length) { Data($0) } + body
+    }
+
+    static func open(_ frame: Data, as direction: Direction, key: SymmetricKey) throws -> Data? {
+        guard frame.count >= 4 else { return nil }
+        let size = Int(frame.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self).bigEndian })
+        guard (28...direction.limit).contains(size), frame.count <= size + 4 else { throw XCTestSocketError.frame }
+        guard frame.count == size + 4 else { return nil }
+        return try AES.GCM.open(AES.GCM.SealedBox(combined: frame.dropFirst(4)), using: key, authenticating: [direction.rawValue])
+    }
 
     static var now: Double { ProcessInfo.processInfo.systemUptime }
 
@@ -51,19 +69,13 @@ struct XCTestSocket {
     func receive(_ direction: Direction, until deadline: Double, cancelled: () -> Bool = { false }) throws -> Data {
         let header = try read(4, until: deadline, cancelled: cancelled)
         let size = Int(header.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self).bigEndian })
-        let limit = direction == .request ? 16_384 : 1_048_576
-        guard (28...limit).contains(size) else { throw XCTestSocketError.frame }
+        guard (28...direction.limit).contains(size) else { throw XCTestSocketError.frame }
         let bytes = try read(size, until: deadline, cancelled: cancelled)
         return try AES.GCM.open(AES.GCM.SealedBox(combined: bytes), using: key, authenticating: [direction.rawValue])
     }
 
     func send(_ data: Data, as direction: Direction, until deadline: Double, cancelled: () -> Bool = { false }) throws {
-        let limit = direction == .request ? 16_384 : 1_048_576
-        guard data.count <= limit - 28,
-              let body = try AES.GCM.seal(data, using: key, authenticating: [direction.rawValue]).combined else { throw XCTestSocketError.frame }
-        var length = UInt32(body.count).bigEndian
-        var frame = withUnsafeBytes(of: &length) { Data($0) }
-        frame.append(body)
+        let frame = try Self.frame(data, as: direction, key: key)
         try frame.withUnsafeBytes { buffer in
             var offset = 0
             while offset < buffer.count {

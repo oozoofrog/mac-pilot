@@ -5,7 +5,7 @@ import XPC
 struct DeviceBackend {
     var list: () throws -> [PhysicalDeviceInfo]
     var locked: (UUID) throws -> Bool
-    var display: (UUID) throws -> CGSize
+    var display: (PhysicalDeviceInfo) throws -> CGSize
     var screenshot: (UUID, CGSize) throws -> String
     var open: (UUID, CGSize) throws -> HIDLink
     /// Opens the connections for these HID features (digitizer, button); nil: open serves every action.
@@ -17,7 +17,7 @@ struct DeviceBackend {
     var endSessions: (UUID?) -> Void = { _ in }
     /// A line for list about how screenshots and state are read, when it matters (fallback mode).
     var status: () -> String? = { nil }
-    var xctestLocked: ((UUID) throws -> Bool)?
+    var xctestLocked: ((PhysicalDeviceInfo) throws -> Bool)?
 }
 
 final class DeviceTool {
@@ -29,8 +29,8 @@ final class DeviceTool {
         default: return transport
         }
     }
-    private var allowed: UUID?
-    private(set) var wiredHardwareUDID: String?
+    private var selection: PhysicalDeviceInfo?
+    private var allowed: UUID? { selection?.identifier }
     private let backend: DeviceBackend
     init(_ backend: DeviceBackend) { self.backend = backend }
 
@@ -38,6 +38,7 @@ final class DeviceTool {
     /// a paired device on the network is accepted, because its CoreDevice tunnel is raised on first use.
     static func connectionProblem(_ device: PhysicalDeviceInfo) -> String? {
         if let pairing = device.pairingState, pairing != "paired" {
+            if device.isAppleWatch { return "pair the companion iPhone in Xcode Device Hub, then trust this Mac on the Apple Watch" }
             return "the device is not paired with this Mac (\(pairing)). Connect it with a USB cable, unlock it and tap Trust, then retry"
         }
         if device.connectionState == "Connected" || device.tunnelState == "connected" { return nil }
@@ -46,11 +47,15 @@ final class DeviceTool {
             "with Wi-Fi on the same network as this Mac (paired before over USB), then retry"
     }
 
-    func checkXCTestAccess(_ id: UUID) throws {
-        guard allowed == id else { throw ToolError("Allow this physical device first.") }
-        guard wiredHardwareUDID != nil else { throw ToolError("Allow the selected paired iPhone over USB.") }
+    @discardableResult
+    func checkXCTestAccess(_ id: UUID) throws -> PhysicalDeviceInfo {
+        guard let selection, selection.identifier == id else { throw ToolError("Allow this physical device first.") }
+        guard selection.isAppleWatch ? selection.pairingState == "paired" : selection.transport == "wired" else {
+            throw ToolError("Select a paired Apple Watch or a USB iPhone for XCTest.")
+        }
         guard let readLock = backend.xctestLocked else { throw ToolError("The in-process XCTest lock check is unavailable.") }
-        guard try !readLock(id) else { throw ToolError("Unlock the iPhone before using XCTest.") }
+        guard try !readLock(selection) else { throw ToolError("Unlock the selected device before using XCTest.") }
+        return selection
     }
 
     func call(_ args: [String: Any]) throws -> [String: Any] {
@@ -67,8 +72,7 @@ final class DeviceTool {
         let known = ["allow", "release", "screenshot", "tap", "swipe", "key", "type", "button", "view", "window"]
         guard known.contains(action) else { throw ToolError("Unknown device action: \(action).") }
         if action == "release" {
-            allowed = nil
-            wiredHardwareUDID = nil
+            selection = nil
             backend.endSessions(nil)
             return text("Physical device permission released. Device Hub, if open, stays open; mac-cu never closes it.")
         }
@@ -79,8 +83,7 @@ final class DeviceTool {
             guard let found = try backend.list().first(where: { $0.identifier == id }) else { throw PhysicalDeviceError.noSuchDevice(value) }
             if let problem = Self.connectionProblem(found) { throw PhysicalDeviceError.unavailable(problem) }
             if let previous = allowed, previous != id { backend.endSessions(previous) }
-            allowed = id
-            wiredHardwareUDID = found.transport == "wired" ? found.hardwareUDID : nil
+            selection = found
             return text("Allowed \(id.uuidString) (\(found.transport.map(Self.transportName) ?? "unknown transport")) for this server process.")
         }
         guard allowed == id else { throw ToolError("Device \(id.uuidString) is not allowed. Run device allow with device set to this identifier first.") }
@@ -91,7 +94,10 @@ final class DeviceTool {
             return text(try view(id, found.name, args["focus"] as? Bool ?? false))
         }
         if let problem = Self.connectionProblem(found) { throw PhysicalDeviceError.unavailable(problem) }
-        let size = try backend.display(id)
+        if found.isAppleWatch && !["screenshot", "tap", "swipe"].contains(action) {
+            throw ToolError("Apple Watch supports screenshot, tap and swipe. Keyboard and iPhone buttons are unavailable.")
+        }
+        let size = try backend.display(found)
         if action == "screenshot" {
             return ["content": [["type": "text", "text": "Portrait screen: \(Int(size.width))×\(Int(size.height)) points; image pixels are input coordinates."], ["type": "image", "data": try backend.screenshot(id, size), "mimeType": "image/jpeg"]]]
         }
@@ -297,7 +303,8 @@ private func physicalBackend() -> DeviceBackend {
         return devices.compactMap { item -> PhysicalDeviceInfo? in
             let properties = item["properties"] as? [String: Any]
             let hardware = (properties?["hardware"] as? [String: Any]) ?? (item["hardwareProperties"] as? [String: Any])
-            guard hardware?["deviceType"] as? String == "iPhone", hardware?["reality"] as? String == "physical",
+            guard let kind = hardware?["deviceType"] as? String, ["iPhone", "appleWatch"].contains(kind),
+                  hardware?["reality"] as? String == "physical",
                   let value = item["identifier"] as? String, let id = UUID(uuidString: value) else { return nil }
             let connection = (properties?["connection"] as? [String: Any]) ?? (item["connectionProperties"] as? [String: Any])
             let device = (item["deviceProperties"] as? [String: Any])
@@ -305,19 +312,22 @@ private func physicalBackend() -> DeviceBackend {
             sessions.noteTransport(id, transport)
             let own = known[id]
             return PhysicalDeviceInfo(identifier: id, name: own?.name ?? (device?["name"] as? String ?? ""), model: hardware?["marketingName"] as? String,
-                                      osVersion: own?.osVersion ?? (device?["osVersionNumber"] as? String).map { "iOS \($0)" },
+                                      osVersion: own?.osVersion ?? (device?["osVersionNumber"] as? String).map { (kind == "appleWatch" ? "watchOS " : "iOS ") + $0 },
                                       transport: transport,
                                       connectionState: own?.connectionState ?? (tunnel == "connected" ? "Connected" : tunnel.map { "tunnel \($0)" }),
-                                      pairingState: connection?["pairingState"] as? String, tunnelState: tunnel, hardwareUDID: hardware?["udid"] as? String)
+                                      pairingState: connection?["pairingState"] as? String, tunnelState: tunnel, hardwareUDID: hardware?["udid"] as? String,
+                                      isAppleWatch: kind == "appleWatch")
         }
     }, locked: { id in
         // The rule is that mac-cu never enters a passcode. A device without a passcode reports false even
         // on its lock screen; input there cannot type a passcode, so it is allowed.
         try physicalWithFallback(sessions, id, seconds: 8, "the lock state", { try await $0.lockState() }, fallback: { try devicectlLocked(id) })
-    }, display: { id in
-        let points = try physicalWithFallback(sessions, id, seconds: 8, "the display", { try await $0.displayInfo().portraitPoints }, fallback: {
-            portraitDisplay(try deviceJSON(["displays"], id: id))?.points
+    }, display: { device in
+        let id = device.identifier
+        let display = try physicalWithFallback(sessions, id, seconds: 8, "the display", { try await $0.displayInfo() }, fallback: {
+            physicalPrimaryDisplay(try deviceJSON(["displays"], id: id))
         })
+        let points = display.points(for: device)
         guard let points else { throw ToolError("Cannot determine a primary portrait display; landscape and unknown orientation are refused.") }
         return points
     }, screenshot: { id, size in
@@ -341,28 +351,21 @@ private func physicalBackend() -> DeviceBackend {
         try deviceHubView(id, name: name, focus: focus, launcher: .system)
     }, endSessions: { sessions.end($0) }, status: {
         sessions.unavailableReason.map { "In-process CoreDevice is off (\($0)); screenshots and device state use devicectl (slower)." }
-    }, xctestLocked: { id in
-        guard let session = sessions.session(id) else { throw ToolError("XCTest requires the in-process CoreDevice lock check.") }
-        return try physicalBlocking(8, "the XCTest lock state") { try await session.lockState() }
+    }, xctestLocked: { device in
+        guard let session = sessions.session(device.identifier) else { throw ToolError("XCTest requires the in-process CoreDevice lock check.") }
+        return try physicalBlocking(device.isAppleWatch ? 45 : 8, "the XCTest lock state") { try await session.lockState() }
     })
 }
 
-private func nativePixels(_ info: [String: Any]) -> CGSize? {
+private func physicalPrimaryDisplay(_ info: [String: Any]) -> PhysicalDisplayState {
     guard let displays = info["displays"] as? [[String: Any]],
           let display = displays.first(where: { ($0["primary"] as? Bool) == true }),
-          let pixels = display["nativeSize"] as? [Double], pixels.count == 2, pixels[0] > 0, pixels[1] > 0 else { return nil }
-    return CGSize(width: pixels[0], height: pixels[1])
-}
-
-/// The primary display while it and the device are in portrait: its size in points and native pixels.
-private func portraitDisplay(_ info: [String: Any]) -> (points: CGSize, pixels: CGSize)? {
-    guard let displays = info["displays"] as? [[String: Any]],
-          let display = displays.first(where: { ($0["primary"] as? Bool) == true }),
-          display["currentOrientation"] as? String == "rot0",
-          let orientation = info["orientation"] as? [String: Any], orientation["currentDeviceOrientation"] as? String == "portrait",
-          let pixels = nativePixels(info),
-          let scale = (display["pointScale"] as? NSNumber)?.doubleValue, scale > 0, pixels.height > pixels.width else { return nil }
-    return (CGSize(width: pixels.width / scale, height: pixels.height / scale), pixels)
+          let pixels = display["nativeSize"] as? [Double], pixels.count == 2,
+          let scale = display["pointScale"] as? NSNumber else { return PhysicalDisplayState() }
+    let orientation = info["orientation"] as? [String: Any]
+    return .primary(pixels: CGSize(width: pixels[0], height: pixels[1]), scale: CGFloat(scale.doubleValue),
+                    rotation: display["currentOrientation"] as? String,
+                    orientation: orientation.map { $0["currentDeviceOrientation"] as? String ?? "unknown" })
 }
 
 let physicalDeviceTool = DeviceTool(physicalBackend())

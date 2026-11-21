@@ -9,6 +9,7 @@ private struct Request: Decodable {
     let target: String?
     let seconds: Double?
     var text: String? = nil
+    var label: String? = nil
 }
 
 private struct RunnerError: LocalizedError {
@@ -29,10 +30,40 @@ final class MacPilotTests: XCTestCase {
     func testServe() async throws {
         let env = ProcessInfo.processInfo.environment
         guard let session = UUID(uuidString: env["MACPILOT_SESSION"] ?? ""),
-              let port = UInt16(env["MACPILOT_PORT"] ?? ""), port >= 49152,
               let secret = Data(base64Encoded: env["MACPILOT_KEY"] ?? ""), secret.count == 32 else {
-            throw RunnerError("Start this USB runner from MacPilot.")
+            throw RunnerError("Start this runner from MacPilot.")
         }
+        let key = SymmetricKey(data: secret)
+        #if os(watchOS)
+        let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("macpilot-" + session.uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try await serve(session: session, target: env["MACPILOT_TARGET"], receive: { sequence, deadline in
+            let request = directory.appendingPathComponent("request-\(sequence)")
+            while XCTestSocket.now < deadline {
+                if FileManager.default.fileExists(atPath: request.path) {
+                    let handle = try FileHandle(forReadingFrom: request)
+                    let bytes: Data
+                    do {
+                        defer { try? handle.close() }
+                        bytes = try handle.read(upToCount: XCTestSocket.Direction.request.limit + 5) ?? Data()
+                    }
+                    if let data = try XCTestSocket.open(bytes, as: .request, key: key) {
+                        if sequence > 1 { try FileManager.default.removeItem(at: directory.appendingPathComponent("request-\(sequence - 1)")) }
+                        return data
+                    }
+                }
+                try await Task.sleep(nanoseconds: 150_000_000)
+            }
+            throw XCTestSocketError.timeout
+        }, reply: { sequence, data in
+            let url = directory.appendingPathComponent("reply-\(sequence)")
+            try XCTestSocket.frame(data, as: .reply, key: key).write(to: url, options: .atomic)
+            if sequence > 0 { try FileManager.default.removeItem(at: directory.appendingPathComponent("reply-\(sequence - 1)")) }
+        })
+        #else
+        guard let port = UInt16(env["MACPILOT_PORT"] ?? ""), port >= 49152 else { throw RunnerError("Invalid USB port.") }
         let listener = socket(AF_INET, SOCK_STREAM, 0)
         guard listener >= 0 else { throw RunnerError("Cannot create the runner socket.") }
         defer { close(listener) }
@@ -53,20 +84,30 @@ final class MacPilotTests: XCTestCase {
         guard setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout.size(ofValue: one))) == 0 else {
             throw RunnerError("Cannot configure the USB connection.")
         }
-        try await serve(XCTestSocket(fd: fd, key: SymmetricKey(data: secret)), session: session, target: env["MACPILOT_TARGET"])
+        try await serve(XCTestSocket(fd: fd, key: key), session: session, target: env["MACPILOT_TARGET"])
+        #endif
     }
 
     private func serve(_ socket: XCTestSocket, session: UUID, target: String?) async throws {
-        func reply(_ sequence: Int, _ payload: [String: Any]) throws {
+        try await serve(session: session, target: target, receive: { _, deadline in
+            try socket.receive(.request, until: deadline)
+        }, reply: { _, data in
+            try socket.send(data, as: .reply, until: XCTestSocket.now + 5)
+        })
+    }
+
+    private func serve(session: UUID, target: String?, receive: (Int, Double) async throws -> Data,
+                       reply: (Int, Data) throws -> Void) async throws {
+        func send(_ sequence: Int, _ payload: [String: Any]) throws {
             let record = payload.merging(["session": session.uuidString, "sequence": sequence]) { _, new in new }
-            try socket.send(JSONSerialization.data(withJSONObject: record), as: .reply, until: XCTestSocket.now + 5)
+            try reply(sequence, JSONSerialization.data(withJSONObject: record))
         }
-        try reply(0, ["state": "ready"])
+        try send(0, ["state": "ready"])
         var sequence = 1
         let expiry = XCTestSocket.now + 900
         while XCTestSocket.now < expiry {
             let data: Data
-            do { data = try socket.receive(.request, until: min(expiry, XCTestSocket.now + 120)) }
+            do { data = try await receive(sequence, min(expiry, XCTestSocket.now + 120)) }
             catch XCTestSocketError.closed { return }
             catch XCTestSocketError.timeout { return }
             let request = try JSONDecoder().decode(Request.self, from: data)
@@ -83,7 +124,7 @@ final class MacPilotTests: XCTestCase {
             } catch {
                 result = ["error": error.localizedDescription]
             }
-            try reply(sequence, result)
+            try send(sequence, result)
             sequence += 1
         }
     }
@@ -107,9 +148,13 @@ final class MacPilotTests: XCTestCase {
             var truncated = false
             func visit(_ item: XCUIElementSnapshot, depth: Int) {
                 guard rows.count < 200, depth <= 32 else { truncated = true; return }
-                rows.append(["depth": depth, "type": item.elementType.rawValue,
-                             "identifier": String(item.identifier.prefix(256)), "label": String(item.label.prefix(256)),
-                             "enabled": item.isEnabled])
+                var row: [String: Any] = ["depth": depth, "type": item.elementType.rawValue,
+                                          "identifier": String(item.identifier.prefix(256)), "label": String(item.label.prefix(256)),
+                                          "enabled": item.isEnabled]
+                if item.elementType == .staticText, let value = item.value as? String {
+                    row["value"] = String(value.prefix(256))
+                }
+                rows.append(row)
                 for child in item.children {
                     if rows.count >= 200 { truncated = true; break }
                     visit(child, depth: depth + 1)
@@ -120,8 +165,9 @@ final class MacPilotTests: XCTestCase {
             return ["elements": rows, "truncated": truncated]
         }
         guard ["wait", "tap", "type"].contains(request.action),
-              let id = request.target, !id.isEmpty, id.utf8.count <= 256 else { throw RunnerError("Expected a bounded accessibility identifier.") }
-        let matches = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == %@", id))
+              (request.target == nil) != (request.label == nil), let value = request.target ?? request.label,
+              !value.isEmpty, value.utf8.count <= 256 else { throw RunnerError("Pass one exact accessibility identifier or label.") }
+        let matches = app.descendants(matching: .any).matching(NSPredicate(format: "%K == %@", request.target == nil ? "label" : "identifier", value))
         if request.action == "wait" {
             let seconds = request.seconds ?? 3
             guard seconds.isFinite, (0...10).contains(seconds) else { throw RunnerError("Wait must be 0 to 10 seconds.") }

@@ -19,7 +19,7 @@ func physicalAgentDeviceTool(_ args: [String: Any]) throws -> [String: Any] {
            action == "release" || (action == "allow" && id != runner.device) {
             guard runner.owner == client.activityID else { throw ToolError("Another connection owns the XCTest session.") }
             if action == "release" { endPhysicalXCTest(owner: client.activityID) }
-            else { throw ToolError("Stop the active XCTest session before selecting a different phone.") }
+            else { throw ToolError("Stop the active XCTest session before selecting a different device.") }
         }
         let result = try deviceTool(args)
         if action == "allow" { client.physicalTestAllowed = id }
@@ -30,8 +30,7 @@ func physicalAgentDeviceTool(_ args: [String: Any]) throws -> [String: Any] {
     let payload: [String: Any]
     if action == "xctestStart" {
         guard activePhysicalTest == nil else { throw ToolError("A MacPilot XCTest session already exists. Its owner must stop it first.") }
-        try physicalDeviceTool.checkXCTestAccess(id)
-        guard let udid = physicalDeviceTool.wiredHardwareUDID, !udid.isEmpty else { throw ToolError("No hardware UDID for the selected USB iPhone.") }
+        let selected = try physicalDeviceTool.checkXCTestAccess(id)
         let target = args["app"] as? String
         if args["app"] != nil {
             guard let target, target.utf8.count <= 255,
@@ -39,7 +38,7 @@ func physicalAgentDeviceTool(_ args: [String: Any]) throws -> [String: Any] {
                 throw ToolError("app must be a bundle identifier.")
             }
         }
-        let runner = try PhysicalXCTestSession(owner: client.activityID, device: id, hardwareUDID: udid, target: target)
+        let runner = try PhysicalXCTestSession(owner: client.activityID, selection: selected, target: target)
         activePhysicalTest = runner
         client.physicalTestEnd = nil
         runner.scheduleReaping { [weak client] reason in
@@ -61,8 +60,9 @@ func physicalAgentDeviceTool(_ args: [String: Any]) throws -> [String: Any] {
             try physicalDeviceTool.checkXCTestAccess(id)
             let operation = String(action.dropFirst("xctest".count)).lowercased()
             if ["wait", "tap", "type"].contains(operation) {
-                guard let target = args["target"] as? String, !target.isEmpty, target.utf8.count <= 256 else {
-                    throw ToolError("Pass an exact accessibility identifier up to 256 UTF-8 bytes.")
+                guard (args["target"] == nil) != (args["label"] == nil),
+                      let target = (args["target"] ?? args["label"]) as? String, !target.isEmpty, target.utf8.count <= 256 else {
+                    throw ToolError("Pass either target (exact identifier) or label (exact label), up to 256 UTF-8 bytes.")
                 }
             }
             if operation == "type" {

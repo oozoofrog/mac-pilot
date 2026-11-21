@@ -1,4 +1,4 @@
-# Physical iPhone: device
+# Physical iPhone and Apple Watch
 
 The `device` tool works on a physical iPhone connected to this Mac. It takes one-frame screenshots and sends taps,
 swipes, keys, typed text and buttons. Input goes to the device over CoreDevice HID, so the Mac's pointer, keyboard
@@ -13,7 +13,13 @@ Xcode's Device Hub (`view` below).
 release and re-allow, and `view` worked; a screenshot took about 2 s instead of 1 s. Not checked over the network:
 a Wi-Fi drop and recovery, and a locked phone.
 
-## Requirements
+## Physical Apple Watch
+
+Select the watch UUID from `device list` and pass it to `allow`. Use `screenshot`, then `tap` or `swipe` in the returned image's point coordinates. Take another screenshot to verify the effect. If the capture is black, wake the watch before sending input. Use `release` when done.
+
+MacPilot uses the paired watch's CoreDevice connection and digitizer directly. Screen capture and coordinate input require no companion app or signed runner. Xcode must be able to reach the paired watch. The tool MUST use the watch display's reported scale and upright rotation. A watch can omit the device orientation. The iPhone orientation requirement still applies to iPhones. Input MUST stop if the device requires a passcode. Use the signed watchOS XCTest runner below for app accessibility queries and element input. Hardware keyboard and iPhone button actions are iPhone-only. The tool has no Digital Crown action.
+
+## iPhone requirements
 
 - Xcode on this Mac. The device list comes from Xcode's `devicectl`, and input uses Xcode's private CoreDevice
   framework. Without Xcode, the tool refuses with a message to install or select Xcode.
@@ -23,7 +29,7 @@ a Wi-Fi drop and recovery, and a locked phone.
 
 ## Steps
 
-1. `{"action": "list"}`: one line per iPhone, `identifier | name | state | transport | OS | allowed`.
+1. `{"action": "list"}`: one line per physical iPhone or Apple Watch, `identifier | name | state | transport | OS | allowed`.
 2. `{"action": "allow", "device": "<identifier>"}`: allow the device the user named. Only the identifier (UUID) is
    accepted, never the name. One device at a time: allowing another one ends the previous device's session.
 3. `{"action": "screenshot", "device": "<identifier>"}`: the size of the portrait screen in points and one JPEG
@@ -89,17 +95,17 @@ Xcode differs, or Xcode is missing, the in-process path stays off: screenshots a
 watching the screen goes through Device Hub.
 
 
-## Signed XCTest runner over USB
+## Signed XCTest runner for iPhone and Apple Watch
 
-Use a paired, unlocked development iPhone with Developer Mode enabled. Use Xcode and a local development signing identity with a provisioning profile valid for the device. From the skill directory, prepare the runner once. Keep the output directory available for subsequent sessions.
+Use a paired, unlocked device with Developer Mode enabled. Connect an iPhone over USB or select the paired Apple Watch in Xcode. Use Xcode and a local development signing identity with a provisioning profile valid for the device. From the skill directory, prepare the runner once. Keep the output directory available for subsequent sessions.
 
 ```sh
-python3 scripts/physical-xctest/prepare.py --output "/path/to/build" --team "$DEVELOPMENT_TEAM"
+python3 scripts/physical-xctest/prepare.py --platform watchOS --output "/path/to/build" --team "$DEVELOPMENT_TEAM"
 ```
 
-Version 1.34.0 requires the USB socket runner. Run preparation again after updating from a mailbox prototype. One authenticated connection carries the commands and replies. The device list uses Xcode inventory for selection. Each command checks the lock state through CoreDevice.
+For iPhone, use `--platform iOS` (the default). Each platform has its own registration. iPhone uses an authenticated USB socket. Apple Watch exchanges authenticated commands in the runner’s data container over the paired CoreDevice file service. The device list uses Xcode inventory for selection. Each command checks the lock state through CoreDevice.
 
-The build installs no software on the phone. Preparation registers the signed product on this Mac. The first `xctestStart` uses Xcode to install and run **MacPilot Runner**. Its icon comes from the MacPilot app. Rebuild after changing Xcode or updating the runner.
+Preparation builds the runner locally. Preparation registers the signed product on this Mac. The first `xctestStart` uses Xcode to install and run **MacPilot Runner**. Its icon comes from the MacPilot app. Rebuild after changing Xcode or updating the runner.
 
 Use the same MCP connection for these `device` calls. Replace `DEVICE_UUID` with the CoreDevice identifier from `device list`. Poll status until it returns `ready`.
 
@@ -112,4 +118,4 @@ Use the same MCP connection for these `device` calls. Replace `DEVICE_UUID` with
 {"action":"release","device":"DEVICE_UUID"}
 ```
 
-For app interaction, include the app bundle ID in the `app` field of `xctestStart`. Only `xctestActivate` explicitly launches or activates that app. `xctestDescribe` returns a bounded accessibility tree. Pass an exact accessibility identifier in `target` for `xctestWait`, `xctestTap` or `xctestType`. Wait accepts `seconds` from 0 to 10. Tap requires one hittable match. Type accepts `text` up to 200 characters in one plain text field. After input, check the effect with wait or describe. Stop the session if delivery is uncertain. A runner expires after 120 seconds without commands or 15 minutes in total.
+For app interaction, include the app bundle ID in the `app` field of `xctestStart`. Only `xctestActivate` explicitly launches or activates that app. `xctestDescribe` returns a bounded accessibility tree. Pass an exact accessibility identifier in `target` or an exact accessibility label in `label` (rebuild older runners for label support) for `xctestWait`, `xctestTap` or `xctestType`. Wait accepts `seconds` from 0 to 10. Tap requires one hittable match. Type accepts `text` up to 200 characters in one plain text field. After input, check the effect with wait or describe. Stop the session if delivery is uncertain. A runner expires after 120 seconds without commands or 15 minutes in total.

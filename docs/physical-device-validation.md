@@ -4,7 +4,19 @@ Test device: iPhone 14 Pro, iOS 27.2, on macOS 27.2 with Xcode 27.2 (CoreDevice 
 identifiers are not recorded here. User-facing behavior and limits are in
 [physical-device.md](../mac-computer-use/skills/mac-computer-use/references/physical-device.md).
 
-## Current status (2026-11-14)
+## Apple Watch direct access (2026-11-21)
+
+On Xcode 27.2, a paired physical Apple Watch Series 11 running watchOS 27.2 appeared with its own CoreDevice identifier and network transport. With the tunnel up, the watch advertised screenshot, display, lock-state and HID digitizer services. Its primary display reported 416 × 496 pixels at scale 2 and rotation `rot0`. The response omitted device orientation.
+
+The guarded device harness selected the watch, refused a different identifier, released the watch and refused capture after release. A production-code capture returned a 208 × 248 JPEG. A tap received a digitizer barrier reply. The watch reported its backlight was off, and the subsequent capture still showed a black screen. This run did not establish a visible tap or swipe effect. The installed MCP listed and allowed the watch and refused its keyboard and USB XCTest commands. A later display request timed out. A direct Xcode display query also timed out after 45 seconds.
+
+After the owner woke the watch, Xcode reported `activeOn` and `passcodeRequired: false`. The first capture timed out. Once the network connection was available, the installed mac-cu MCP returned a 208 × 248 image of the app grid. A tap at (104, 52) opened Settings. A swipe from (103, 207) to (103, 73) moved the list from Notifications and Smart Stack to General, Focus and Airplane Mode. The reverse swipe returned the list to the top. A separate screenshot confirmed each transition. The client then released the watch.
+
+### Signed watchOS XCTest runner
+
+The paired watch ran the development-signed watchOS test bundle on Xcode 27.2. The runner returned an authenticated pong, activated Calculator, read its XCTest accessibility snapshot, found a calculator button by its exact label and exited cleanly. The calculator's digit buttons had labels and empty identifiers. A device file transfer initially lost its completion acknowledgement because the runner removed the request before CoreDevice finished inspecting it. Keeping the current request until the next authenticated command allowed consecutive commands to complete.
+
+## iPhone status (2026-11-14)
 
 | Area | Status |
 | --- | --- |

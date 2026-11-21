@@ -13,3 +13,11 @@ public struct CaptureScreenshotOutput {
     public var displayUniqueID: String? { fatalError() }
     public var imageFormat: ScreenshotImageFormat { fatalError() }
 }
+
+import System
+public struct DeviceFileSystemNode {}
+public struct FileSystemDirectoryTransferOptions {}
+public struct FileServicePath {
+    public enum FileServiceDomain { case appDataContainer(String, String?) }
+    public init(domain: FileServiceDomain, relativePath: FilePath, directoryTransferOptions: FileSystemDirectoryTransferOptions?) { fatalError() }
+}

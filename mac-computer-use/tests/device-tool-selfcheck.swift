@@ -34,15 +34,14 @@ let currentSession: SessionStub? = nil
         xctestBackend.xctestLocked = { _ in locked }
         let xctest = DeviceTool(xctestBackend)
         _ = try xctest.call(["action": "allow", "device": a.uuidString])
-        precondition(xctest.wiredHardwareUDID == "wired-A")
-        try xctest.checkXCTestAccess(a)
+        let selected = try xctest.checkXCTestAccess(a)
+        precondition(selected.hardwareUDID == "wired-A")
         locked = true
         refuses { try xctest.checkXCTestAccess(a) }
         locked = false
         refuses { try xctest.checkXCTestAccess(b) }
         _ = try xctest.call(["action": "allow", "device": b.uuidString])
         refuses { try xctest.checkXCTestAccess(b) }
-        precondition(xctest.wiredHardwareUDID == nil)
         refuses { try call("tap", a.uuidString, ["x": 1, "y": 1]) }
         refuses { try call("allow", "same") }
         try call("allow", a.uuidString)

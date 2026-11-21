@@ -68,11 +68,29 @@ enum PhysicalSessionError: Error, CustomStringConvertible, Equatable {
     }
 }
 
-/// The primary display: its native pixels, and its size in points and pixels while it and the device are portrait.
 struct PhysicalDisplayState: Equatable {
     var portraitPoints: CGSize?
     var portraitPixels: CGSize?
     var nativePixels: CGSize?
+    var watchPointsWithoutOrientation: CGSize?
+
+    static func primary(pixels: CGSize, scale: CGFloat, rotation: String?, orientation: String?) -> Self {
+        guard pixels.width > 0, pixels.height > 0 else { return Self() }
+        var state = Self(nativePixels: pixels)
+        guard rotation == "rot0", scale.isFinite, scale > 0, pixels.height > pixels.width else { return state }
+        let points = CGSize(width: pixels.width / scale, height: pixels.height / scale)
+        if orientation == "portrait" {
+            state.portraitPoints = points
+            state.portraitPixels = pixels
+        } else if orientation == nil {
+            state.watchPointsWithoutOrientation = points
+        }
+        return state
+    }
+
+    func points(for device: PhysicalDeviceInfo) -> CGSize? {
+        portraitPoints ?? (device.isAppleWatch ? watchPointsWithoutOrientation : nil)
+    }
 }
 
 /// One device as PhysicalDeviceSession needs it. The implementations returned are fetched once per session.
@@ -444,17 +462,10 @@ private final class CoreDeviceRemote: PhysicalRemote {
     }
 }
 
-/// The same rule as the devicectl path: primary display at rot0 and the device in portrait.
 private func coreDeviceDisplayState(_ info: DisplayInfo) -> PhysicalDisplayState {
     guard let display = info.displays.first(where: { $0.primary }) else { return PhysicalDisplayState() }
-    let native = display.nativeSize
-    let pixels: CGSize? = native.width > 0 && native.height > 0 ? native : nil
-    let scale = CGFloat(display.pointScale)
-    guard let pixels, display.currentOrientation == "rot0", info.orientation?.currentDeviceOrientation.rawValue == "portrait",
-          scale > 0, pixels.height > pixels.width else {
-        return PhysicalDisplayState(portraitPoints: nil, portraitPixels: nil, nativePixels: pixels)
-    }
-    return PhysicalDisplayState(portraitPoints: CGSize(width: pixels.width / scale, height: pixels.height / scale), portraitPixels: pixels, nativePixels: pixels)
+    return .primary(pixels: display.nativeSize, scale: CGFloat(display.pointScale), rotation: display.currentOrientation,
+                    orientation: info.orientation?.currentDeviceOrientation.rawValue)
 }
 
 private final class CoreDeviceAssertion: PhysicalAssertion {

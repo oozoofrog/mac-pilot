@@ -27,10 +27,10 @@ Installing the Plugin alone does not register mac-cu MCP. Follow [installation a
 
 | Package | Version | Scope |
 | --- | --- | --- |
-| [Mac Computer Use](mac-computer-use/skills/mac-computer-use/SKILL.md) | 1.34.0 | Mac apps, browsers, web views, native simulator screen controls and physical iPhone input |
+| [Mac Computer Use](mac-computer-use/skills/mac-computer-use/SKILL.md) | 1.34.0 | Mac apps, browsers, web views, native simulator screen controls and physical iPhone and Apple Watch input |
 | [Simulator Pilot](simulator-pilot/skills/simulator-pilot/SKILL.md) | 1.10.0 | Simulator app launch, logs, test data and change verification |
 
-`mac-computer-use`: Operate Mac apps, browser pages, iOS web views and physical iPhones with the mac-cu MCP server. Use for desktop UI tasks without a better API or CLI, web view inspection, input and screenshots on a connected iPhone, or mac-cu setup, modes and simulator preparation. Route iOS Simulator app launch, logs, test data and change verification through simulator-pilot.
+`mac-computer-use`: Operate Mac apps, browser pages, iOS web views, physical iPhones and Apple Watch with the mac-cu MCP server. Use for desktop UI tasks without a better API or CLI, web view inspection, input and screenshots on a connected iPhone or paired Apple Watch, or mac-cu setup, modes and simulator preparation. Route iOS Simulator app launch, logs, test data and change verification through simulator-pilot.
 
 `simulator-pilot`: Use for iOS Simulator app launch, logs, screen interaction, test data and change verification. Use mac-computer-use for screen controls; follow the project build instructions for compilation. Excludes Mac desktop/browser/web view tasks and account signup.
 
@@ -38,7 +38,7 @@ The native simulator LCD has an opaque screen, draggable device handle, right an
 
 The LCD inspector supports explicit accessibility refresh, qualified actions and string editing with restore. **3D 뷰 검사** opens a separate textured UIKit hierarchy with typed hidden/alpha edits and restore. Support is limited to the qualified runtime and debuggable app entries; SwiftUI hosting textures can omit text and shapes. See [inspection and support limits](docs/simulator-inspector.md).
 
-The `device` tool takes screenshots of a connected iPhone and sends taps, swipes, keys and buttons to it over CoreDevice, without moving the Mac's pointer or using its keyboard. Devices are allowed one at a time by identifier, and input is refused while the iPhone requires a passcode. The user watches the screen in Xcode's Device Hub, which `device` opens at that iPhone. It requires Xcode. A locally signed MacPilot Runner adds USB XCTest sessions for app activation, accessibility queries, waits, taps and text entry. See [physical iPhone](mac-computer-use/skills/mac-computer-use/references/physical-device.md) for verified connections and limits.
+For a paired Apple Watch, `device` supports signed XCTest sessions for accessibility queries and element input. It also captures the screen and sends coordinate taps and swipes. The `device` tool takes screenshots of a connected iPhone and sends taps, swipes, keys and buttons to it over CoreDevice, without moving the Mac's pointer or using its keyboard. Devices are allowed one at a time by identifier, and input is refused while the iPhone requires a passcode. The user watches the screen in Xcode's Device Hub, which `device` opens at that iPhone. It requires Xcode. A locally signed MacPilot Runner adds USB XCTest sessions for app activation, accessibility queries, waits, taps and text entry. See [physical iPhone](mac-computer-use/skills/mac-computer-use/references/physical-device.md) for verified connections and limits.
 
 Use **시뮬레이터 관리…** in the mac-cu menu bar or app menu to prepare runtimes, create compatible devices and start a selected device in the LCD. See [simulator preparation](mac-computer-use/skills/mac-computer-use/references/simulator-preparation.md). Downloads and local DMG imports require an explicit selection in that screen; app builds, installation, launch and logs remain Simulator Pilot workflows.
 

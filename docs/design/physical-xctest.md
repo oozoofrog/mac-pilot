@@ -1,4 +1,4 @@
-# Physical iPhone XCTest sessions
+# Physical XCTest sessions
 
 ## Decision
 
@@ -6,7 +6,7 @@ MacPilot needs interactive commands while a UI test is running. Use an owned XCT
 
 Appium runs WebDriverAgent on the device as an HTTP server that dispatches requests to XCTest. MacPilot needs the same ability to issue successive commands during a UI test. The built-in Xcode tools cover installation and execution, so the MacPilot transport adds no external library. [Appium WebDriverAgent architecture](https://appium.github.io/appium-xcuitest-driver/v4/wda-custom-server/) · [Apple command-line test execution](https://developer.apple.com/library/archive/technotes/tn2339/_index.html)
 
-## Observable contract
+## iPhone observable contract
 
 1. Preparation MUST produce signed iPhoneOS test products outside the repository. Only a successful preparation may replace the pointer to the prepared run configuration. No signing credentials or personal team identifiers belong in the package.
 2. After device allow, xctestStart MUST bind one wired physical iPhone, one MCP connection and an optional target bundle ID. Resolve the Xcode destination from the hardware UDID of that exact CoreDevice identifier. Start MUST NOT launch a target app. Omit the target for a transport-only session.
@@ -53,3 +53,11 @@ Xcode 27.2 (27B48) ships a `devicectl` launcher that selects the CoreDevice 651.
 A second development-signed test opened a TCP listener on the iPhone's IPv4 loopback interface. The Mac selected the wired entry for the known hardware UDID and called the existing `Usbmux.connect` implementation. Two ordered pings and their authenticated replies crossed one open stream. The session secret and port were passed to the runner through its Xcode test configuration. The test contained no target application or UI commands. Xcode then ran the original signed product and its original transport passed again.
 
 Release 1.4.0 uses the CoreDevice inventory from device allowance to resolve the selected hardware UDID. It opens only the matching wired usbmuxd connection. Before each command, it checks the lock requirement through the in-process CoreDevice session. An interrupted reply terminates the session with uncertain delivery. No command or response file is copied.
+
+## Paired Apple Watch sessions
+
+Use the same `device allow` and `xctestStart` through `xctestStop` API on a paired Apple Watch. Prepare the signed watchOS product with `prepare.py --platform watchOS --team TEAM --output BUILD_ROOT`. Preparation MUST retain the separate iPhone registration. Start MUST bind the selected watch, MCP owner and optional target app. The runner MUST use XCUIApplication for foreground activation, snapshots, waits, element taps and text entry. Send exactly one selector for element operations. Use `target` for an exact identifier or `label` for an exact accessibility label. Input MUST require exactly one match. No input may use coordinate HID as a fallback.
+
+The iPhone uses USB loopback. watchOS restricts low-level networking, and the paired watch has its own Xcode destination. For the watch, exchange authenticated, sequence-bound records in the development-signed runner's own session directory using Xcode's device file service. Start one test per session. Reject incomplete records before dispatch. A missing reply after submission MUST end the session with uncertain delivery. Stop and idle expiry release the runner. Verify an authenticated ping and a visible postcondition after an element tap on the selected physical watch.
+
+[Apple watchOS UI testing](https://developer.apple.com/documentation/watchos-apps/setting-up-tests-for-your-watchos-app) · [Apple watchOS networking restrictions](https://developer.apple.com/documentation/technotes/tn3135-low-level-networking-on-watchos)

@@ -20,24 +20,29 @@ final class PhysicalXCTestSession {
     private let port = UInt16.random(in: 49152...65535)
     private let key = SymmetricKey(size: .bits256)
     private var connection: FDStream?
-    private var ready: Bool { connection != nil }
+    private var watchFiles: WatchXCTestFiles?
+    private var ready = false
+    private let startupLimit: Double
     private let configuration: URL
     private let work: URL
     private let started = ProcessInfo.processInfo.systemUptime
     private var sequence = 0
     private var finished = false
 
-    init(owner: UUID, device: UUID, hardwareUDID: String, target: String?) throws {
+    init(owner: UUID, selection: PhysicalDeviceInfo, target: String?) throws {
+        guard let hardwareUDID = selection.hardwareUDID, !hardwareUDID.isEmpty else { throw ToolError("Missing hardware UDID for the selected XCTest destination.") }
+        let watch = selection.isAppleWatch
+        startupLimit = watch ? 240 : 90
         self.owner = owner
-        self.device = device
+        self.device = selection.identifier
         let fm = FileManager.default
-        let pointer = fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/mac-cu/physical-xctest.json")
+        let pointer = fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/mac-cu").appendingPathComponent(watch ? "watch-xctest.json" : "physical-xctest.json")
         guard let data = try? Data(contentsOf: pointer),
               let prepared = try? JSONDecoder().decode([String: String].self, from: data),
-              prepared["transport"] == "usb-socket-v1", let configPath = prepared["configuration"],
+              prepared["transport"] == (watch ? "watch-files-v1" : "usb-socket-v1"), let configPath = prepared["configuration"],
               let plist = NSDictionary(contentsOfFile: configPath) as? [String: Any],
-              var test = plist["MacPilotRunner"] as? [String: Any] else {
-            throw ToolError("Prepare the signed MacPilot XCTest runner with physical-xctest/prepare.py first.")
+              var test = plist["MacPilotRunner"] as? [String: Any], let bundle = test["TestHostBundleIdentifier"] as? String else {
+            throw ToolError("Prepare the selected platform with physical-xctest/prepare.py --platform \(watch ? "watchOS" : "iOS") first.")
         }
         self.hardwareUDID = hardwareUDID
         let products = URL(fileURLWithPath: configPath).deletingLastPathComponent()
@@ -45,6 +50,7 @@ final class PhysicalXCTestSession {
         work = products.appendingPathComponent("MacPilot-\(session.uuidString)", isDirectory: true)
         try fm.createDirectory(at: work, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         do {
+            if watch { watchFiles = try WatchXCTestFiles(device: device, bundle: bundle, session: session, work: work) }
             var env = test["EnvironmentVariables"] as? [String: String] ?? [:]
             env["MACPILOT_SESSION"] = session.uuidString
             env["MACPILOT_PORT"] = String(port)
@@ -64,7 +70,7 @@ final class PhysicalXCTestSession {
             defer { try? log.close() }
             process.executableURL = URL(fileURLWithPath: "/usr/bin/xcodebuild")
             process.arguments = ["test-without-building", "-xctestrun", configuration.path, "-destination", "id=\(hardwareUDID)",
-                                 "-parallel-testing-enabled", "NO", "-destination-timeout", "30", "-test-timeouts-enabled", "YES", "-maximum-test-execution-time-allowance", "960", "-resultBundlePath", work.appendingPathComponent("test.xcresult").path]
+                                 "-parallel-testing-enabled", "NO", "-destination-timeout", watch ? "120" : "30", "-test-timeouts-enabled", "YES", "-maximum-test-execution-time-allowance", "960", "-resultBundlePath", work.appendingPathComponent("test.xcresult").path]
             process.standardOutput = log
             process.standardError = log
             process.standardInput = FileHandle.nullDevice
@@ -83,13 +89,18 @@ final class PhysicalXCTestSession {
             let age = ProcessInfo.processInfo.systemUptime - self.started
             if !self.process.isRunning {
                 cleanup(self.exitDescription)
-            } else if (!self.ready && age > 90) || age > 960 {
-                cleanup(self.ready ? "XCTest session lifetime expired." : "XCTest did not report ready within 90 seconds.")
+            } else if (!self.ready && age > self.startupLimit) || age > 960 {
+                cleanup(self.ready ? "XCTest session lifetime expired." : self.startupError)
             } else {
                 self.scheduleReaping(cleanup)
             }
         }
     }
+    private var startupError: String {
+        let reason = watchFiles?.lastReadError.map { " " + $0 } ?? ""
+        return "XCTest did not report ready within \(Int(startupLimit)) seconds." + reason
+    }
+
     private var cleaned = false
 
     private var exitDescription: String {
@@ -114,7 +125,17 @@ final class PhysicalXCTestSession {
 
     func status() throws -> [String: Any] {
         try checkProcess()
-        if !ready {
+        if !ready, let watchFiles {
+            do {
+                if let record = try watchFiles.read(sequence: 0, key: key, until: XCTestSocket.now + 5) {
+                    guard try validate(record)["state"] as? String == "ready" else { throw XCTestSocketError.frame }
+                    ready = true
+                }
+            } catch {
+                interrupt()
+                throw ToolError("Invalid watch runner handshake. Stop the session and rebuild the watchOS runner.")
+            }
+        } else if !ready {
             guard let wired = try Usbmux.devices().first(where: { $0.isUSB && $0.serial.caseInsensitiveCompare(hardwareUDID) == .orderedSame }) else {
                 interrupt()
                 throw ToolError("The selected USB iPhone disconnected.")
@@ -125,6 +146,7 @@ final class PhysicalXCTestSession {
                     let hello = try readReply(channel, until: XCTestSocket.now + 4, cancelled: { false })
                     guard hello["state"] as? String == "ready" else { throw XCTestSocketError.frame }
                     connection = candidate
+                    ready = true
                 } catch {
                     candidate.close()
                     interrupt()
@@ -132,15 +154,19 @@ final class PhysicalXCTestSession {
                 }
             }
         }
-        if !ready && ProcessInfo.processInfo.systemUptime - started > 90 {
+        if !ready && ProcessInfo.processInfo.systemUptime - started > startupLimit {
             interrupt()
-            throw ToolError("Runner readiness timed out. Inspect \(work.path)/xcodebuild.log and stop the session.")
+            throw ToolError(startupError)
         }
         return ["state": ready ? "ready" : "starting"]
     }
 
     private func readReply(_ socket: XCTestSocket, until deadline: Double, cancelled: () -> Bool) throws -> [String: Any] {
         let data = try socket.receive(.reply, until: deadline, cancelled: cancelled)
+        return try validate(data)
+    }
+
+    private func validate(_ data: Data) throws -> [String: Any] {
         guard let row = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               row["session"] as? String == session.uuidString, row["sequence"] as? Int == sequence else {
             throw XCTestSocketError.frame
@@ -148,23 +174,39 @@ final class PhysicalXCTestSession {
         return row
     }
 
-    private func send(_ action: String, args: [String: Any], over socket: XCTestSocket, until deadline: Double, cancelled: () -> Bool) throws {
+    private func send(_ action: String, args: [String: Any], until deadline: Double, cancelled: () -> Bool) throws {
         sequence += 1
         var message: [String: Any] = ["session": session.uuidString, "sequence": sequence, "action": action]
-        for field in ["target", "seconds", "text"] { message[field] = args[field] }
-        try socket.send(JSONSerialization.data(withJSONObject: message), as: .request, until: deadline, cancelled: cancelled)
+        for field in ["target", "label", "seconds", "text"] { message[field] = args[field] }
+        let data = try JSONSerialization.data(withJSONObject: message)
+        if let watchFiles {
+            try watchFiles.send(data, sequence: sequence, key: key, until: deadline)
+        } else if let connection {
+            try XCTestSocket(fd: connection.fd, key: key).send(data, as: .request, until: deadline, cancelled: cancelled)
+        } else { throw XCTestSocketError.closed }
     }
 
     func command(_ action: String, args: [String: Any], cancelled: () -> Bool) throws -> [String: Any] {
         try checkProcess()
-        guard let connection else { throw ToolError("Poll xctestStatus until ready.") }
+        guard ready else { throw ToolError("Poll xctestStatus until ready.") }
         if cancelled() { throw XCTestSocketError.cancelled }
-        let channel = XCTestSocket(fd: connection.fd, key: key)
-        let deadline = XCTestSocket.now + 20
+        let deadline = XCTestSocket.now + (watchFiles == nil ? 20 : 45)
         let result: [String: Any]
         do {
-            try send(action, args: args, over: channel, until: deadline, cancelled: cancelled)
-            result = try readReply(channel, until: deadline, cancelled: cancelled)
+            try send(action, args: args, until: deadline, cancelled: cancelled)
+            if let watchFiles {
+                while true {
+                    if cancelled() { throw XCTestSocketError.cancelled }
+                    guard XCTestSocket.now < deadline else { throw XCTestSocketError.timeout }
+                    if let data = try watchFiles.read(sequence: sequence, key: key, until: deadline) {
+                        result = try validate(data)
+                        break
+                    }
+                    Thread.sleep(forTimeInterval: 0.2)
+                }
+            } else if let connection {
+                result = try readReply(XCTestSocket(fd: connection.fd, key: key), until: deadline, cancelled: cancelled)
+            } else { throw XCTestSocketError.closed }
         } catch {
             interrupt()
             throw ToolError("Unconfirmed XCTest delivery. Do not repeat input. Start a new session. " + error.localizedDescription)
@@ -182,9 +224,9 @@ final class PhysicalXCTestSession {
 
     @discardableResult
     func stop() -> Bool {
-        if process.isRunning, let connection, !finished {
-            try? send("stop", args: [:], over: XCTestSocket(fd: connection.fd, key: key), until: XCTestSocket.now + 2, cancelled: { false })
-            let deadline = ProcessInfo.processInfo.systemUptime + 10
+        if process.isRunning, ready, !finished {
+            try? send("stop", args: [:], until: XCTestSocket.now + (watchFiles == nil ? 2 : 8), cancelled: { false })
+            let deadline = ProcessInfo.processInfo.systemUptime + (watchFiles == nil ? 10 : 30)
             while process.isRunning && ProcessInfo.processInfo.systemUptime < deadline { Thread.sleep(forTimeInterval: 0.05) }
         }
         let exitedCleanly = !process.isRunning && process.terminationReason == .exit && process.terminationStatus == 0
