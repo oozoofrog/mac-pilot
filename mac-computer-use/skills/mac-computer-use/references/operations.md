@@ -13,7 +13,7 @@ Read after the setup and approval guidance in [SKILL.md](../SKILL.md).
    its top left, the same as `click_at`; without: window points), and the picture gets rulers, a
    100 px grid and a numbered box around each element. Work out distances from the `@` numbers
    (subtract); the picture is for checking. Leave it off otherwise: it costs tokens.
-   For a running menu-bar app, use its bundle ID or executable name. Its status items appear as numbered `MenuBarItem` elements even when it has no window. Click the item by number. If the app activates and its transient popover closes when focus returns, click the item with `"foreground": true`. MacPilot keeps that popover in front until you dismiss it with `act` or disconnect the MCP client. If it opens an AppKit popover, the next state shows the `Popover` and its controls. Use the new numbers to operate them. Exposed accessibility identifiers appear as `id="…"`.
+   For a running menu-bar app, use its bundle ID or executable name. Its status items appear as numbered `MenuBarItem` elements even when it has no window. Click the item by number. If the app activates and its transient popover closes when focus returns, use the foreground retry in step 5 for that item. MacPilot keeps that popover in front until you dismiss it with `act` or disconnect the MCP client. If it opens an AppKit popover, the next state shows the `Popover` and its controls. Use the new numbers to operate them. Exposed accessibility identifiers appear as `id="…"`.
 
 2. **Act by number, in one batch.** `act` runs a list of actions in order and returns the new tree:
 
@@ -41,12 +41,9 @@ Read after the setup and approval guidance in [SKILL.md](../SKILL.md).
 
 3. **Numbers change.** Take numbers only from the newest result for that app.
 4. **Check before you answer.** Confirm the result in the returned tree.
-5. **Foreground, only as the last step.** Always try the background way first, and check the
-   result. Only if the tree or a screenshot shows that the background actions did nothing, repeat
-   them with `"foreground": true`: the app comes to the front, the actions use the real mouse and
-   keyboard, and after them the previous app and the mouse pointer go back. This interrupts the
-   user, so do not use it first, and do not use it for apps that worked in the background. The
-   user's input mode (section 6a) can refuse `foreground` or use it for every `act`.
+5. **Foreground retry in auto mode.** Try one reversible action in the background. If the result is unclear, read the same window with `get_app_state`. If the target still needs the same action, send its current element number, the returned `receipt`, `foreground:true`, and the `expected` and `observed` results. The receipt is valid once for 30 seconds on that connection and window. A different control or another action on the same target requires a new attempt. For a save or submission with an uncertain outcome, reconcile the saved state before acting again.
+6. **Keep a window in front across decisions.** Add `"chain":"begin"` to an admitted foreground action. In the user's foreground mode, you can start directly. Use the returned ID for subsequent `act` and `get_app_state` calls on that window. Use current element numbers. End with `{"app":"Calculator","chain":"<returned ID>","end":true}`. The hold expires after 30 seconds without input. Reads do not renew it. If the user changes windows, stop and inspect the new state. In background-only mode, use ordinary background calls.
+
 
 Good to know:
 
@@ -306,9 +303,9 @@ asks. Run mac-cu itself (it is in the folder of this SKILL.md, after setup):
 
 | Mode | Values | What it does |
 | --- | --- | --- |
-| `input` | `auto` (default) | `act` works in the background, and with `foreground` when you ask for it (section 3). |
+| `input` | `auto` (default) | `act` works in the background, and accepts a foreground retry after the matching background attempt and observation (section 3). |
 | | `background` | `act` refuses `foreground`. If the background way does not work, tell the user. |
-| | `foreground` | Every `act` brings the app to the front and uses real input, then puts the previous app back. |
+| | `foreground` | A one-shot act restores the previous app. An explicit chain can retain focus between calls. |
 | `show` | `glow` (default) | The glow, the pointer and the preview (section 6). |
 | | `steps` | Also the goal and the current step of `act` in a box at the bottom of the window, and in the preview's title, for 6 seconds after the last step. Add `goal` to `act` so that the user sees what the actions are for. Typed text shows only its length; `wait` is not counted as a step. |
 | | `off` | No glow, pointer or preview. |
@@ -335,11 +332,11 @@ it to a pane beside the chat, where the user can also change the modes with butt
 | The approval dialog shows in every session | Tell the user to choose Always Allow in the dialog. |
 | decide fails | Check the OpenAI API key, account access, network and reported error. Inspect the tree or page to verify the result. |
 | No glow | Codex has no glow. Claude Code: the hooks are missing or point to an old skill folder; run the setup script again. |
-| A click does nothing | Try `perform` with an action from `[...]`, a parent element, `menu`, `click_at` from a screenshot, then `"foreground": true`. |
+| A click does nothing | Try `perform` with an action from `[...]`, a parent element, `menu`, `click_at` from a screenshot, then follow the foreground retry procedure in step 5. |
 | simulator: "has no com.apple.coredevice.feature.remote.hid.digitizer" | The simulator is still booting, or Xcode is older than 27. Wait, then try again. |
 | simulator: keys or taps do nothing | Take a `screenshot`: a sheet or alert may cover the field. `tap` the field first. If the app stopped taking keys after a keyboard change, start the app again. |
 | simulator: "No screenshot … Stopped after 15 seconds" | simctl waits for the screen while the Mac is very busy. Try again later. |
 | webinspector: "No answer to … in 15 seconds" | The app is in the background, the web view is not on the screen (`about:blank`), or another inspector uses the page. Bring the app to the front, choose a page that shows, or close the other inspector. |
 | webinspector: a device is missing or has an error | Connect it with USB and trust this Mac. On the device: Settings > Safari > Advanced > Web Inspector on. The app's WKWebView needs `isInspectable = true` (KakaoTalk: all builds except REAL). |
 | webinspector: "No page matches" | Run `list`. A simulator that is booting, or an app with no web view open, has no page. To see the protocol messages, start the agent with `MAC_CU_WEBINSPECTOR_DEBUG=1`: they go to the mac-cu log (stderr). |
-| Keys do nothing | Give the field the focus first (`click` it), or open a window with `menu`. If a button has the focus (`focused` in the tree), keys go to that button: `click_at` an empty part of the window first. Then try `"foreground": true`. |
+| Keys do nothing | Give the field the focus first (`click` it), or open a window with `menu`. If a button has the focus (`focused` in the tree), keys go to that button: `click_at` an empty part of the window first. Then follow the foreground retry procedure in step 5. |

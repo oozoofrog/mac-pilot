@@ -88,6 +88,9 @@ final class Session {
     let app: NSRunningApplication
     let root: AXUIElement
     var elements: [AXUIElement] = []
+    var stateRevision = UUID()
+    var stateWindow: AXUIElement?
+    var stateBounds: CGRect?
     /// When this server opened the app. A just opened app needs a moment before it shows a window.
     var opened: Date?
     /// Screenshot pixels per window point in the latest screenshot. click_at and drag use it.
@@ -256,6 +259,9 @@ func render(_ node: AXUIElement, indent: Int, depth: Int, includeChildren: Bool 
 
 func state(of session: Session, screenshot: Bool, guides: Bool = false) throws -> [[String: Any]] {
     let window = frontWindow(of: session)
+    session.stateRevision = UUID()
+    session.stateWindow = window
+    session.stateBounds = window.flatMap(frame)
     var lines: [String] = []
     var elements: [AXUIElement] = []
     if let window { render(window, indent: 0, depth: 0, lines: &lines, elements: &elements) }
@@ -277,14 +283,15 @@ func state(of session: Session, screenshot: Bool, guides: Bool = false) throws -
                   "\(elements.count) elements. Use these numbers in act; they change after each call."]
     if elements.count >= maxElements { header.append("The tree was cut at \(maxElements) elements.") }
     // Guides: one list of element frames (Window Server coordinates) for the tree lines, the picture and the user's window.
-    let bounds = frame(window) ?? .zero
+    let bounds = session.stateBounds ?? .zero
     let frames: [CGRect?] = guides ? elements.prefix(windowCount).map(frame) : []
     let allBoxes = guideBoxes(frames, within: bounds)
     let boxes = Array(allBoxes.prefix(maxGuideBoxes))
     let jpeg = screenshot ? capture(session: session, window: window, guides: guides ? boxes : nil) : nil
     if guides {
         // Without a picture the numbers are window points: the same as the picture's pixels at scale 1.
-        let scale = jpeg == nil ? 1 : session.screenshotScale
+        if jpeg == nil { session.screenshotScale = 1 }
+        let scale = session.screenshotScale
         for (index, rect) in frames.enumerated() {
             if let rect { lines[index] += guideSuffix(pixelRect(rect, window: bounds, scale: scale)) }
         }
@@ -372,7 +379,7 @@ let modifierFlags: [String: CGEventFlags] = [
 
 /// Background actions send events to the app's process. Foreground actions send them as real input,
 /// because some apps ignore events sent to their process.
-var sendsRealInput = false
+
 
 // Not in the public headers. Real input gets the window and the point in it from the window server.
 let setWindowLocation = dlsym(dlopen(nil, RTLD_NOW), "CGEventSetWindowLocation")
@@ -394,13 +401,13 @@ func aim(_ event: CGEvent, pid: pid_t) {
     setWindowLocation?(event, CGPoint(x: point.x - bounds.minX, y: point.y - bounds.minY))
 }
 
-func deliver(_ event: CGEvent, to pid: pid_t) {
-    if sendsRealInput { event.post(tap: .cghidEventTap); return }
+func deliver(_ event: CGEvent, to pid: pid_t) throws {
+    if let owner = realDesktopInput { try owner.post(event); return }
     if event.type != .keyDown && event.type != .keyUp { aim(event, pid: pid) }
     event.postToPid(pid)
 }
 
-func postKey(_ code: CGKeyCode, character: String?, flags: CGEventFlags, pid: pid_t) {
+func postKey(_ code: CGKeyCode, character: String?, flags: CGEventFlags, pid: pid_t) throws {
     for down in [true, false] {
         guard let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down) else { continue }
         event.flags = flags
@@ -408,7 +415,7 @@ func postKey(_ code: CGKeyCode, character: String?, flags: CGEventFlags, pid: pi
             let units = Array(character.utf16)
             event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
         }
-        deliver(event, to: pid)
+        try deliver(event, to: pid)
         usleep(8_000)
     }
 }
@@ -424,9 +431,9 @@ func pressKey(_ combination: String, pid: pid_t) throws {
         flags.insert(modifier)
     }
     if let code = namedKeys[key.lowercased()] {
-        postKey(code, character: nil, flags: flags, pid: pid)
+        try postKey(code, character: nil, flags: flags, pid: pid)
     } else if key.count == 1, let character = key.lowercased().first {
-        postKey(characterKeys[character] ?? 0, character: key, flags: flags, pid: pid)
+        try postKey(characterKeys[character] ?? 0, character: key, flags: flags, pid: pid)
     } else {
         throw ToolError("Unknown key \"\(key)\". Use a character or one of: \(namedKeys.keys.sorted().joined(separator: ", ")).")
     }
@@ -435,12 +442,12 @@ func pressKey(_ combination: String, pid: pid_t) throws {
 /// Type text as key events to the focused element of the app, as a person types. A line break is
 /// a Return key. (Text put in through the accessibility API can skip the app's own input handling:
 /// Chrome's address field then shows the text but does not open it on Return.)
-func typeText(_ text: String, pid: pid_t) {
+func typeText(_ text: String, pid: pid_t) throws {
     for character in text {
         if character == "\n" {
-            postKey(36, character: nil, flags: [], pid: pid)
+            try postKey(36, character: nil, flags: [], pid: pid)
         } else {
-            postKey(characterKeys[Character(character.lowercased())] ?? 0, character: String(character),
+            try postKey(characterKeys[Character(character.lowercased())] ?? 0, character: String(character),
                     flags: character.isUppercase ? .maskShift : [], pid: pid)
         }
     }
@@ -464,19 +471,19 @@ func showCursor(on node: AXUIElement, pid: pid_t) {
     if let bounds = frame(node) { showCursor(at: CGPoint(x: bounds.midX, y: bounds.midY), pid: pid) }
 }
 
-func postDrag(from start: CGPoint, to end: CGPoint, pid: pid_t) {
-    func post(_ type: CGEventType, _ point: CGPoint) {
+func postDrag(from start: CGPoint, to end: CGPoint, pid: pid_t) throws {
+    func post(_ type: CGEventType, _ point: CGPoint) throws {
         if let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left) {
-            deliver(event, to: pid)
+            try deliver(event, to: pid)
         }
         usleep(15_000)
     }
-    post(.leftMouseDown, start)
+    try post(.leftMouseDown, start)
     for step in 1...10 {
         let t = CGFloat(step) / 10
-        post(.leftMouseDragged, CGPoint(x: start.x + (end.x - start.x) * t, y: start.y + (end.y - start.y) * t))
+        try post(.leftMouseDragged, CGPoint(x: start.x + (end.x - start.x) * t, y: start.y + (end.y - start.y) * t))
     }
-    post(.leftMouseUp, end)
+    try post(.leftMouseUp, end)
 }
 
 /// The element, or one of its near parents, when it is a row that can be selected.
@@ -492,14 +499,14 @@ func selectableRow(_ node: AXUIElement) -> AXUIElement? {
     return nil
 }
 
-func postClick(at point: CGPoint, count: Int, right: Bool, pid: pid_t) {
+func postClick(at point: CGPoint, count: Int, right: Bool, pid: pid_t) throws {
     let (down, up): (CGEventType, CGEventType) = right ? (.rightMouseDown, .rightMouseUp) : (.leftMouseDown, .leftMouseUp)
     for click in 1...max(count, 1) {
         for type in [down, up] {
             guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point,
                                       mouseButton: right ? .right : .left) else { continue }
             event.setIntegerValueField(.mouseEventClickState, value: Int64(click))
-            deliver(event, to: pid)
+            try deliver(event, to: pid)
             usleep(15_000)
         }
     }
@@ -558,7 +565,7 @@ func run(_ action: [String: Any], session: Session) throws -> String {
         }
         guard let bounds = frame(node) else { throw ToolError("Element \(index) has no position to click.") }
         let point = CGPoint(x: bounds.midX, y: bounds.midY)
-        postClick(at: point, count: count, right: right, pid: pid)
+        try postClick(at: point, count: count, right: right, pid: pid)
         return "click \(index): mouse events at (\(Int(point.x)), \(Int(point.y)))"
     case "set_value":
         let (index, node) = try target()
@@ -567,7 +574,7 @@ func run(_ action: [String: Any], session: Session) throws -> String {
         try check(AXUIElementSetAttributeValue(node, kAXValueAttribute as CFString, try text() as CFString), "set_value \(index)")
         return "set_value \(index)"
     case "type_text":
-        typeText(try text(), pid: pid)
+        try typeText(try text(), pid: pid)
         return "type_text"
     case "press_key":
         guard let key = action["key"] as? String else { throw ToolError("press_key needs \"key\".") }
@@ -616,16 +623,26 @@ func run(_ action: [String: Any], session: Session) throws -> String {
     case "click_at":
         let point = try screenPoint("x", "y")
         showCursor(at: point, pid: pid)
-        postClick(at: point, count: action["count"] as? Int ?? 1, right: action["button"] as? String == "right", pid: pid)
+        try postClick(at: point, count: action["count"] as? Int ?? 1, right: action["button"] as? String == "right", pid: pid)
         return "click_at (\(Int(point.x)), \(Int(point.y))) on screen"
     case "drag":
         let start = try screenPoint("x", "y"), end = try screenPoint("to_x", "to_y")
         showCursor(at: end, pid: pid)
-        postDrag(from: start, to: end, pid: pid)
+        try postDrag(from: start, to: end, pid: pid)
         return "drag (\(Int(start.x)), \(Int(start.y))) -> (\(Int(end.x)), \(Int(end.y))) on screen"
     case "wait":
         let seconds = min(max(action["seconds"] as? Double ?? 1, 0), 10)
-        usleep(useconds_t(seconds * 1_000_000))
+        if let held = realDesktopInput {
+            let until = ProcessInfo.processInfo.systemUptime + seconds
+            while true {
+                try held.validate()
+                let remaining = until - ProcessInfo.processInfo.systemUptime
+                if remaining <= 0 { break }
+                usleep(useconds_t(min(remaining, 0.1) * 1_000_000))
+            }
+        } else {
+            usleep(useconds_t(seconds * 1_000_000))
+        }
         return "wait \(seconds)s"
     default:
         throw ToolError("Unknown action type \"\(type)\".")
@@ -663,7 +680,7 @@ func scroll(_ node: AXUIElement, direction: String, pages: Double, pid: pid_t) t
         throw ToolError("Could not make a scroll event.")
     }
     event.location = CGPoint(x: bounds.midX, y: bounds.midY)
-    deliver(event, to: pid)
+    try deliver(event, to: pid)
     return "scroll wheel event"
 }
 
@@ -688,8 +705,8 @@ func restoreFrontApp(_ previous: NSRunningApplication) -> Bool {
 }
 
 /// Bring the app and its front window to the front, and wait until it is in front.
-func bringToFront(_ session: Session) {
-    if let window = frontWindow(of: session) { AXUIElementPerformAction(window, kAXRaiseAction as CFString) }
+func bringToFront(_ session: Session, window: AXUIElement?) {
+    if let window { AXUIElementPerformAction(window, kAXRaiseAction as CFString) }
     AXUIElementSetAttributeValue(session.root, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
     session.app.activate()
     for _ in 0..<20 where frontmostPID() != session.pid { usleep(50_000) }
@@ -702,7 +719,8 @@ func bringToFront(_ session: Session) {
 /// before the actions (no model call), else the answers of OpenAI Decisions (Decide.swift). A short tree, an
 /// "unknown" answer or a failed call gives the tree too.
 func act(_ actions: [[String: Any]], session: Session, foreground asked: Bool, screenshot: Bool, guides: Bool = false,
-         verify: [String: Any]? = nil, goal: String? = nil) throws -> [String: Any] {
+         verify: [String: Any]? = nil, goal: String? = nil, chain: String? = nil,
+         inputMode: String = modes()["input"] ?? "auto", admission: DesktopAttempt? = nil) throws -> [String: Any] {
     // AppKit answers accessibility actions on mac-cu's own windows inside this process, on this (not the main) thread;
     // raising or pressing them there stopped the daemon (EXC_BREAKPOINT in NSWindow ordering).
     guard session.pid != getpid() else {
@@ -712,23 +730,21 @@ func act(_ actions: [[String: Any]], session: Session, foreground asked: Bool, s
             """)
     }
     let mode = modes()
-    if asked && mode["input"] == "background" {
+    if (asked || chain != nil) && inputMode == "background" {
         throw ToolError("""
             The user set mac-cu to the background only (`mac-cu --mode input=background`), so act does not use \
             foreground. Tell the user what did not work in the background; the user can change the mode.
             """)
     }
-    let foreground = asked || mode["input"] == "foreground"
+    guard let client = currentSession else { throw ToolError("Desktop input needs an active connection.") }
+    try guardDesktopAct(chain, session: session, owner: client)
+    let foreground = asked || inputMode == "foreground" || chain != nil || desktopHold?.popover != nil
     let steps = mode["show"] == "steps"
     let pid = session.pid
-    let front = frontmostPID()
-    let held = currentSession?.popoverFocus
-    let continuingPopover = front == pid && held?.app === session && held?.popover == statusPopover(in: statusItems(of: session))
-    let previousApp = continuingPopover ? held?.previous : front.flatMap(NSRunningApplication.init(processIdentifier:))
-    currentSession?.popoverFocus = nil
+    let previous = frontmostPID().flatMap(NSRunningApplication.init(processIdentifier:))
     var log: [String] = []
     var failed: String?
-    let pointer = CGEvent(source: nil)?.location
+    var completed = 0
     var before: String?
     if verify != nil {
         // Keep the element numbers of the tree the agent saw: the actions use them.
@@ -736,18 +752,15 @@ func act(_ actions: [[String: Any]], session: Session, foreground asked: Bool, s
         before = try? state(of: session, screenshot: false)[0]["text"] as? String
         session.elements = seen
     }
-    if foreground {
-        if front != pid { bringToFront(session) }
-        sendsRealInput = true
-        log.append("\(session.name) is in front for these actions; they use real input"
-                   + (asked ? "." : " (the user's input mode is foreground)."))
-    }
+    let held = try foreground ? acquireDesktopFocus(session: session, owner: client, chain: chain,
+                                                     action: actions.first, admission: admission) : nil
+    realDesktopInput = held
+    var returned = false
     defer {
-        if foreground {
-            sendsRealInput = false
-            if let pointer { CGWarpMouseCursorPosition(pointer) }  // The user's pointer goes back.
-        }
+        realDesktopInput = nil
+        if !returned, let held { closeDesktopFocus(held) }
     }
+    if held != nil { log.append("\(session.name) is in front for these actions.") }
     // Waits are not steps for the user: the step before a wait stays shown, and the count leaves waits out.
     let shown = actions.filter { $0["type"] as? String != "wait" }
     var number = 0
@@ -757,7 +770,10 @@ func act(_ actions: [[String: Any]], session: Session, foreground asked: Bool, s
             showStep("\(number)/\(shown.count) " + stepText(action, session: session), goal: goal, pid: pid)
         }
         do {
+            try held?.validate()
             log.append(try run(action, session: session))
+            completed += 1
+            if let held, held.id != nil, action["type"] as? String != "wait" { held.renew() }
             // Text fields (for example Chrome's address field) need time to take a new text.
             let changesText = ["set_value", "type_text", "select_text"].contains(action["type"] as? String ?? "")
             usleep(changesText ? 250_000 : 60_000)
@@ -768,23 +784,36 @@ func act(_ actions: [[String: Any]], session: Session, foreground asked: Bool, s
     }
     if steps { showStep(failed == nil ? "끝 · 동작 \(shown.count)개" : "멈춤 · 동작이 실패함", goal: goal, pid: pid) }
     usleep(250_000)  // Let the app update its window.
-    if let previous = previousApp, previous.processIdentifier != pid, frontmostPID() == pid {
+    realDesktopInput = nil
+    if let held {
+        do { try held.validate() } catch {
+            if failed == nil { failed = (error as? ToolError)?.message ?? "The foreground target changed." }
+        }
         let popover = statusPopover(in: statusItems(of: session))
-        if let popover, foreground || continuingPopover, let client = currentSession {
-            client.popoverFocus = (session, popover, previous)
-            log.append("The status popover stays in front for interaction.")
+        if failed != nil || held.id == nil {
+            if failed == nil, let popover, held.statusItem != nil {
+                held.retainPopover(popover)
+                log.append("The status popover stays in front for interaction.")
+            } else if !closeDesktopFocus(held) {
+                log.append("Previous focus was not restored.")
+            }
+        }
+    } else if let previous, previous.processIdentifier != pid, frontmostPID() == pid {
+        if !restoreFrontApp(previous) {
+            log.append("\(previous.localizedName ?? "The previous app") did not come back to the front.")
         } else {
-            if !restoreFrontApp(previous) {
-                log.append("\(previous.localizedName ?? "The previous app") did not come back to the front.")
-            } else if !foreground {
-                log.append("\(previous.localizedName ?? "The previous app") is in front again.")
-                if popover != nil && mode["input"] == "auto" {
-                    log.append("If the status popover closed, click the status item with foreground: true.")
-                }
+            log.append("\(previous.localizedName ?? "The previous app") is in front again.")
+            if statusPopover(in: statusItems(of: session)) != nil && inputMode == "auto" {
+                log.append("If the status popover closed, click the status item with foreground: true.")
             }
         }
     }
-    var content = try state(of: session, screenshot: screenshot, guides: guides)
+    var content: [[String: Any]]
+    do { content = try state(of: session, screenshot: screenshot, guides: guides) } catch {
+        failed = failed ?? "Could not read the resulting state: \(error)"
+        if let held { closeDesktopFocus(held) }
+        content = [["type": "text", "text": "Inspect state before repeating any actions."]]
+    }
     if let verify, failed == nil, let window = frontWindow(of: session) {
         let tree = content[0]["text"] as? String ?? ""
         let header = "Window: \"\(string(window, kAXTitleAttribute) ?? "")\", App: \(session.name)."
@@ -823,7 +852,22 @@ func act(_ actions: [[String: Any]], session: Session, foreground asked: Bool, s
             }
         }
     }
+    var details: [String: Any] = ["completed": completed]
+    if failed != nil {
+        details["skipped"] = max(0, actions.count - completed - 1)
+        if completed < actions.count { details["failedStep"] = completed + 1 }
+        log.append("Completed \(completed) of \(actions.count) steps; inspect any partial effect before retrying.")
+    }
+    if let held, desktopHold === held, let id = held.id, let deadline = held.deadline {
+        let remaining = max(0, Double(deadline.uptimeNanoseconds) - Double(DispatchTime.now().uptimeNanoseconds)) / 1e9
+        details["chain"] = id
+        details["expiresInSeconds"] = remaining
+        log.append("Foreground chain: \(id); expires in \(Int(remaining)) seconds.")
+    }
     let summary = (log + (failed.map { ["Stopped: \($0)"] } ?? [])).joined(separator: "\n")
     content[0]["text"] = summary + "\n\n" + (content[0]["text"] as? String ?? "")
-    return failed == nil ? ["content": content] : ["content": content, "isError": true]
+    var result: [String: Any] = ["content": content, "structuredContent": details]
+    if failed != nil { result["isError"] = true }
+    returned = true
+    return result
 }

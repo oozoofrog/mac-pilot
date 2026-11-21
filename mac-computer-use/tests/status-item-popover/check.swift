@@ -2,18 +2,26 @@ import AppKit
 
 func checkStatusPopover() -> Never {
     DispatchQueue.global().async {
+        var status: Int32 = 0
+        defer { exit(status) }
         do {
             let directory = URL(fileURLWithPath: ProcessInfo.processInfo.environment["MAC_CU_STATUS_CHECK"]!)
             let pid = try String(contentsOf: directory.appendingPathComponent("ready"), encoding: .utf8)
             guard AXIsProcessTrusted(), CGPreflightScreenCaptureAccess() else {
                 throw ToolError("The check requires Accessibility and Screen Recording.")
             }
+            guard let console = CGSessionCopyCurrentDictionary() as? [String: Any],
+                  console["CGSSessionScreenIsLocked"] as? Bool != true,
+                  console["kCGSSessionOnConsoleKey"] as? Bool == true, CGDisplayIsAsleep(CGMainDisplayID()) == 0,
+                  modesFile.standardizedFileURL.path.hasPrefix(directory.standardizedFileURL.path + "/") else {
+                throw ToolError("The check requires an unlocked, awake console and an isolated settings directory.")
+            }
             let fixtureName = ProcessInfo.processInfo.environment["MAC_CU_STATUS_EXECUTABLE"]!
             currentSession = AgentSession(fd: -1)
             let session = try session(for: fixtureName)
             guard session.pid == pid_t(pid) else { throw ToolError("Resolved a different process.") }
             func tool(_ name: String, _ fields: [String: Any] = [:]) throws -> [[String: Any]] {
-                let response = callTool(name, fields.merging(["app": fixtureName]) { _, app in app })
+                let response = handleQueue.sync { callTool(name, fields.merging(["app": fixtureName]) { _, app in app }) }
                 let content = response["content"] as? [[String: Any]] ?? []
                 guard response["isError"] as? Bool != true else { throw ToolError(content.first?["text"] as? String ?? "Tool error") }
                 return content
@@ -26,7 +34,37 @@ func checkStatusPopover() -> Never {
             }
             let closed = try tool("get_app_state").first?["text"] as? String ?? ""
             guard closed.contains("has no window"), closed.contains("fixture.status") else { throw ToolError(closed) }
-            let prior = frontmostPID()
+            let original = frontmostPID().flatMap(NSRunningApplication.init(processIdentifier:))
+            let hostWindow = DispatchQueue.main.sync { () -> NSWindow in
+                NSApplication.shared.setActivationPolicy(.regular)
+                let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 280, height: 96),
+                                      styleMask: [.titled], backing: .buffered, defer: false)
+                window.title = "Desktop check origin"
+                window.isReleasedWhenClosed = false
+                window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+                return window
+            }
+            defer {
+                let front = frontmostPID()
+                DispatchQueue.main.sync {
+                    hostWindow.close()
+                    if front == getpid() || front == session.pid { original?.activate() }
+                }
+            }
+            for _ in 0..<50 {
+                if frontmostPID() == getpid(),
+                   element(attribute(AXUIElementCreateApplication(getpid()), kAXFocusedWindowAttribute)) != nil { break }
+                usleep(40_000)
+            }
+            let prior = getpid()
+            let originAX = AXUIElementCreateApplication(prior)
+            guard frontmostPID() == prior,
+                  let originWindow = element(attribute(originAX, kAXFocusedWindowAttribute)),
+                  string(originWindow, kAXTitleAttribute) == "Desktop check origin" else {
+                throw ToolError("The owned original window did not receive focus. Front \(String(describing: frontmostPID())), expected \(prior), window \(String(describing: element(attribute(originAX, kAXFocusedWindowAttribute)))).")
+            }
+            try desktopCheckMode("foreground")
             let open = try click("fixture.status", foreground: true)
             guard open.contains("Popover"), open.contains("fixture.confirm") else { throw ToolError(open) }
             let picture = try tool("get_app_state", ["screenshot": true, "guides": true])
@@ -36,19 +74,22 @@ func checkStatusPopover() -> Never {
                 throw ToolError("Missing or mismatched popover screenshot: " + picture.compactMap { $0["text"] as? String }.joined(separator: "\n"))
             }
             try jpeg.write(to: directory.appendingPathComponent("popover.jpg"))
+            try desktopCheckMode("auto")
+            guard frontmostPID() == session.pid else { throw ToolError("Popover lost focus before confirm.") }
             _ = try click("fixture.confirm")
             let changed = try tool("get_app_state").first?["text"] as? String ?? ""
             guard changed.contains("Confirmed fixture") else { throw ToolError(changed) }
             let dismissed = try click("fixture.status")
             guard dismissed.contains("has no window"), !dismissed.contains("fixture.confirm") else { throw ToolError(dismissed) }
-            guard frontmostPID() == prior else { throw ToolError("Previous foreground app was not restored.") }
+            guard frontmostPID() == prior else { throw ToolError("Previous foreground app was not restored. Prior \(prior), current \(String(describing: frontmostPID())). \(dismissed)") }
             print("PASS windowless status item, popover tree, screenshot, button action and dismissal")
-            exit(0)
+            try checkDesktopChain(session, fixtureName, directory, prior)
+            return
         } catch {
             print("FAIL", error)
-            exit(1)
+            status = 1
         }
     }
-    RunLoop.main.run()
+    NSApplication.shared.run()
     exit(1)
 }

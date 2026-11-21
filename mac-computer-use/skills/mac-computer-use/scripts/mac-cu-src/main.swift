@@ -124,6 +124,9 @@ func approve(_ name: String, bundleID: String?) throws {
     let keys = [name.lowercased()] + (bundleID.map { [$0.lowercased()] } ?? [])
     let approved = currentSession?.approvedApps ?? []
     if keys.contains(where: approved.contains) || !alwaysAllowed().isDisjoint(with: keys) { return }
+    if let client = currentSession, desktopFocusBusy(owner: client) {
+        throw ToolError("Desktop focus is held. End the foreground interaction before opening another app approval.")
+    }
     switch askUser(app: name, bundleID: bundleID) {
     case "accept": currentSession?.approvedApps.formUnion(keys)
     case "always":
@@ -179,6 +182,7 @@ let tools: [[String: Any]] = [
             "type": "object",
             "properties": [
                 "app": ["type": "string", "description": "App name as shown in the Dock or menu bar (for example \"Calculator\" or \"계산기\"), or a bundle ID."],
+                "chain": ["type": "string", "description": "Optional active foreground chain ID. Reading does not extend its expiry."],
                 "screenshot": ["type": "boolean", "description": "Also return a picture of the window."],
                 "guides": ["type": "boolean", "description": """
                     Measure: add @x,y w×h (screenshot pixels, from the top left; the same as click_at) to each tree \
@@ -193,7 +197,7 @@ let tools: [[String: Any]] = [
         "name": "act",
         "description": """
             Run actions on a Mac app, in order, then return its new tree. The app stays in the \
-            background unless foreground is true. Element numbers come from the latest get_app_state or \
+            background in auto mode until a verified retry requests foreground. Element numbers come from the latest get_app_state or \
             act result for that app. click uses the accessibility press action when the element has one, \
             else it selects the row of a list or table, else it sends mouse events. type_text sends key events to the focused element ("\\n" is Return); \
             set_value replaces the whole text of an element. click_at and drag use screenshot pixels. \
@@ -204,11 +208,12 @@ let tools: [[String: Any]] = [
             "properties": [
                 "app": ["type": "string", "description": "Same app name as in get_app_state."],
                 "actions": ["type": "array", "items": actionSchema],
-                "foreground": ["type": "boolean", "description": """
-                    Bring the app to the front. Restore the previous app after the actions, or when a status popover is dismissed with act. \
-                    Only after the same actions did nothing in the background: it interrupts the user. \
-                    The user's input mode can refuse it (background) or use it for every act (foreground).
-                    """],
+                "foreground": ["type": "boolean", "description": "In auto mode, first attempt one action in the background and read get_app_state. Retry only a safe, confirmed ineffective action with receipt, expected and observed. Background-only mode refuses foreground."],
+                "receipt": ["type": "string", "description": "Single-use receipt from the matching background act."],
+                "expected": ["type": "string", "description": "The observable effect expected from the background action."],
+                "observed": ["type": "string", "description": "The actual result of a subsequent get_app_state. Reconcile any uncertain external effect before retrying."],
+                "chain": ["type": "string", "description": "Use begin with an admitted foreground action, then pass the returned chain ID on each subsequent act. The hold expires after 30 seconds without input."],
+                "end": ["type": "boolean", "description": "Use true with the chain ID and no actions to release focus."],
                 "screenshot": ["type": "boolean", "description": "Also return a picture of the window."],
                 "guides": ["type": "boolean", "description": """
                     Measure: add @x,y w×h (screenshot pixels, from the top left; the same as click_at) to each tree \
@@ -227,7 +232,7 @@ let tools: [[String: Any]] = [
                     answer, too many buttons or a failed call give the tree too.
                     """],
             ],
-            "required": ["app", "actions"],
+            "required": ["app"],
         ],
     ],
     [
@@ -486,16 +491,13 @@ func callTool(_ name: String, _ arguments: [String: Any]) -> [String: Any] {
         let screenshot = arguments["screenshot"] as? Bool ?? false
         let guides = arguments["guides"] as? Bool ?? false
         switch name {
-        case "get_app_state":
-            return ["content": try state(of: try session(for: arguments["app"] as? String ?? ""), screenshot: screenshot, guides: guides)]
-        case "act":
-            guard let actions = arguments["actions"] as? [[String: Any]], !actions.isEmpty else {
-                throw ToolError("act needs a list of actions.")
-            }
-            return try act(actions, session: try session(for: arguments["app"] as? String ?? ""),
-                           foreground: arguments["foreground"] as? Bool ?? false, screenshot: screenshot, guides: guides,
-                           verify: arguments["verify"] as? [String: Any], goal: arguments["goal"] as? String)
+        case "get_app_state", "act":
+            return try desktopTool(name, arguments, screenshot: screenshot, guides: guides)
         case "browser":
+            if let client = currentSession, desktopFocusBusy(owner: client),
+               !["tabs", "page", "screenshot", "network", "response_body", "console", "cookies", "wait"].contains(arguments["action"] as? String ?? "") {
+                throw ToolError("Desktop focus is held. End the foreground interaction before changing the browser.")
+            }
             return try browserTool(arguments)
         case "decide":
             return try decideTool(arguments)
