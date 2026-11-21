@@ -13,6 +13,8 @@ Read after the setup and approval guidance in [SKILL.md](../SKILL.md).
    its top left, the same as `click_at`; without: window points), and the picture gets rulers, a
    100 px grid and a numbered box around each element. Work out distances from the `@` numbers
    (subtract); the picture is for checking. Leave it off otherwise: it costs tokens.
+   For a running menu-bar app, use its bundle ID or executable name. Its status items appear as numbered `MenuBarItem` elements even when it has no window. Click the item by number. If the app activates and its transient popover closes when focus returns, click the item with `"foreground": true`. MacPilot keeps that popover in front until you dismiss it with `act` or disconnect the MCP client. If it opens an AppKit popover, the next state shows the `Popover` and its controls. Use the new numbers to operate them. Exposed accessibility identifiers appear as `id="…"`.
+
 2. **Act by number, in one batch.** `act` runs a list of actions in order and returns the new tree:
 
    ```json

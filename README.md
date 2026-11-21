@@ -27,7 +27,7 @@ Installing the Plugin alone does not register mac-cu MCP. Follow [installation a
 
 | Package | Version | Scope |
 | --- | --- | --- |
-| [Mac Computer Use](mac-computer-use/skills/mac-computer-use/SKILL.md) | 1.34.0 | Mac apps, browsers, web views, native simulator screen controls and physical iPhone and Apple Watch input |
+| [Mac Computer Use](mac-computer-use/skills/mac-computer-use/SKILL.md) | 1.35.0 | Mac apps, browsers, web views, native simulator screen controls and physical iPhone and Apple Watch input |
 | [Simulator Pilot](simulator-pilot/skills/simulator-pilot/SKILL.md) | 1.10.0 | Simulator app launch, logs, test data and change verification |
 
 `mac-computer-use`: Operate Mac apps, browser pages, iOS web views, physical iPhones and Apple Watch with the mac-cu MCP server. Use for desktop UI tasks without a better API or CLI, web view inspection, input and screenshots on a connected iPhone or paired Apple Watch, or mac-cu setup, modes and simulator preparation. Route iOS Simulator app launch, logs, test data and change verification through simulator-pilot.

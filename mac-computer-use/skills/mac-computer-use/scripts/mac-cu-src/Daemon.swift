@@ -64,6 +64,7 @@ final class AgentSession {
     let activityID = UUID()
     var physicalTestEnd: (device: UUID, reason: String)?
     var physicalTestAllowed: UUID?
+    var popoverFocus: (app: Session, popover: AXUIElement, previous: NSRunningApplication)?
     let fd: Int32
     var agent = "?"
     var version = ""
@@ -226,7 +227,13 @@ func serve(_ fd: Int32, host: String?) {
         return true
     }
     connection.disconnect()
-    handleQueue.async { endPhysicalXCTest(owner: connection.activityID) }
+    handleQueue.async {
+        endPhysicalXCTest(owner: connection.activityID)
+        if let held = connection.popoverFocus, frontmostPID() == held.app.pid,
+           statusPopover(in: statusItems(of: held.app)) == held.popover {
+            restoreFrontApp(held.previous)
+        }
+    }
     connectionsLock.lock()
     connections.removeAll { $0 === connection }
     connectionsLock.unlock()

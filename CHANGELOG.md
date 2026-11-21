@@ -1,12 +1,18 @@
 # Changelog
 
-## Unreleased
+## 1.5.0 — 2026-11-21
+
+mac-computer-use 1.35.0, simulator-pilot 1.10.0.
+
+- macOS 메뉴 막대 앱을 실행 파일 이름으로 찾고, 창이 없는 상태에서 상태 항목을 눌러 열린 팝오버의 요소와 화면을 읽고 조작할 수 있다.
 
 - mac-cu 앱을 교체한 뒤에도 기존 MCP 클라이언트가 다음 연결에서 새 실행 파일을 사용한다.
 
 - 실물 Apple Watch에서 개발 서명한 watchOS XCTest 러너로 앱 활성화, 접근성 트리 조회, 요소 대기와 입력을 실행할 수 있다.
 
 - 페어링된 실물 Apple Watch를 `device`에서 선택하고 워치 화면을 캡처하거나 좌표로 탭·스와이프할 수 있다.
+
+- 실측 범위는 Xcode 27.2와 watchOS 27.2의 Apple Watch Series 11이다. Watch 무선 연결이 간헐적으로 끊겼고, iPhone 14 Pro의 iOS 27.2.1에서는 XCTest 자동화 모드 시작이 시간 초과됐다.
 
 ## 1.4.0 — 2026-11-21
 

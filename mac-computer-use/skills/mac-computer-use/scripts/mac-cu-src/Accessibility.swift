@@ -123,7 +123,7 @@ func resolvedPid(_ app: NSRunningApplication) -> pid_t {
 }
 
 func matches(_ app: NSRunningApplication, _ wanted: String) -> Bool {
-    [app.localizedName, app.bundleIdentifier, app.bundleURL?.deletingPathExtension().lastPathComponent]
+    [app.localizedName, app.bundleIdentifier, app.bundleURL?.deletingPathExtension().lastPathComponent, app.executableURL?.lastPathComponent]
         .contains { $0?.lowercased() == wanted }
 }
 
@@ -149,7 +149,14 @@ func session(for name: String) throws -> Session {
     guard !wanted.isEmpty else { throw ToolError("Give the app name, for example \"Calculator\".") }
     // Read on the main thread: from other threads the list keeps missing apps opened after the first read.
     let apps = DispatchQueue.main.sync { NSWorkspace.shared.runningApplications }
-    var app = apps.first { $0.activationPolicy == .regular && matches($0, wanted) }
+    let candidates = apps.filter { [.regular, .accessory].contains($0.activationPolicy) && matches($0, wanted) }
+    let exact = candidates.filter { $0.bundleIdentifier?.lowercased() == wanted }
+    let matchesByName = exact.isEmpty ? candidates : exact
+    guard matchesByName.count <= 1 else {
+        let ids = matchesByName.compactMap(\.bundleIdentifier).sorted().joined(separator: ", ")
+        throw ToolError("Multiple running apps match \(name). Use the intended bundle ID: \(ids).")
+    }
+    var app = matchesByName.first
     let running = app != nil
     if let app {
         try approve(app.localizedName ?? name, bundleID: app.bundleIdentifier)
@@ -181,13 +188,27 @@ func session(for name: String) throws -> Session {
     return session
 }
 
+func statusItems(of session: Session) -> [AXUIElement] {
+    guard let bar = element(attribute(session.root, kAXExtrasMenuBarAttribute)) else { return [] }
+    return children(bar).filter { string($0, kAXRoleAttribute) == kAXMenuBarItemRole }
+}
+
+func statusPopover(in items: [AXUIElement]) -> AXUIElement? {
+    for item in items {
+        if let popover = children(item).first(where: { string($0, kAXRoleAttribute) == kAXPopoverRole }) { return popover }
+    }
+    return nil
+}
+
 func frontWindow(of session: Session) -> AXUIElement? {
     while true {
+        let items = statusItems(of: session)
+        if let popover = statusPopover(in: items) { return popover }
         for name in [kAXFocusedWindowAttribute, kAXMainWindowAttribute] {
             if let window = element(attribute(session.root, name)) { return window }
         }
         if let window = (attribute(session.root, kAXWindowsAttribute) as? [AXUIElement])?.first { return window }
-        guard let opened = session.opened, Date().timeIntervalSince(opened) < 5 else { return nil }
+        guard items.isEmpty, let opened = session.opened, Date().timeIntervalSince(opened) < 5 else { return nil }
         usleep(100_000)
     }
 }
@@ -199,7 +220,7 @@ func menuItems(_ node: AXUIElement) -> [AXUIElement] {
 
 // MARK: - State
 
-func render(_ node: AXUIElement, indent: Int, depth: Int, lines: inout [String], elements: inout [AXUIElement]) {
+func render(_ node: AXUIElement, indent: Int, depth: Int, includeChildren: Bool = true, lines: inout [String], elements: inout [AXUIElement]) {
     guard depth < maxDepth, elements.count < maxElements else { return }
     let role = string(node, kAXRoleAttribute) ?? "AXUnknown"
     let title = string(node, kAXTitleAttribute)
@@ -207,12 +228,14 @@ func render(_ node: AXUIElement, indent: Int, depth: Int, lines: inout [String],
     let value = role == "AXScrollBar" ? nil : string(node, kAXValueAttribute)
     let placeholder = string(node, kAXPlaceholderValueAttribute)
     let actions = actionNames(node).filter { !quietActions.contains($0) }
-    let labelled = title != nil || description != nil || value != nil || placeholder != nil
+    let identifier = string(node, kAXIdentifierAttribute)
+    let labelled = identifier != nil || title != nil || description != nil || value != nil || placeholder != nil
     var childIndent = indent
     if labelled || !actions.isEmpty || !containerRoles.contains(role) {
         var parts = ["\(elements.count)", String(role.dropFirst(2))]
         if let subrole = string(node, kAXSubroleAttribute) { parts[1] += "/" + subrole.dropFirst(2) }
         if let title { parts.append("\"\(title)\"") }
+        if let identifier { parts.append("id=\"\(identifier)\"") }
         if let description, description != title { parts.append("desc=\"\(description)\"") }
         if let value, value != title { parts.append("value=\"\(value)\"") }
         if let placeholder { parts.append("placeholder=\"\(placeholder)\"") }
@@ -225,32 +248,37 @@ func render(_ node: AXUIElement, indent: Int, depth: Int, lines: inout [String],
         elements.append(node)
         childIndent += 1
     }
+    guard includeChildren else { return }
     for child in children(node) {
         render(child, indent: childIndent, depth: depth + 1, lines: &lines, elements: &elements)
     }
 }
 
 func state(of session: Session, screenshot: Bool, guides: Bool = false) throws -> [[String: Any]] {
-    guard let window = frontWindow(of: session) else {
-        session.elements = []
-        let menus = element(attribute(session.root, kAXMenuBarAttribute)).map(menuItems) ?? []
-        let titles = menus.compactMap { string($0, kAXTitleAttribute) }.map { "\"\($0)\"" }.joined(separator: ", ")
-        return [["type": "text", "text": """
-            App: \(session.name) has no window. Use a menu action to open one, for example \
-            {"type": "menu", "path": ["File", "New"]}. Menus: \(titles).
-            """]]
-    }
+    let window = frontWindow(of: session)
     var lines: [String] = []
     var elements: [AXUIElement] = []
-    render(window, indent: 0, depth: 0, lines: &lines, elements: &elements)
+    if let window { render(window, indent: 0, depth: 0, lines: &lines, elements: &elements) }
+    let windowCount = elements.count
+    for item in statusItems(of: session) {
+        render(item, indent: 0, depth: 0, includeChildren: false, lines: &lines, elements: &elements)
+    }
     session.elements = elements
+    guard let window else {
+        let menus = element(attribute(session.root, kAXMenuBarAttribute)).map(menuItems) ?? []
+        let titles = menus.compactMap { string($0, kAXTitleAttribute) }.map { "\"\($0)\"" }.joined(separator: ", ")
+        let header = lines.isEmpty
+            ? "App: \(session.name) has no window. Use a menu action to open one, for example {\"type\": \"menu\", \"path\": [\"File\", \"New\"]}. Menus: \(titles)."
+            : "App: \(session.name) has no window. Use a numbered status item with act."
+        return [["type": "text", "text": ([header] + lines).joined(separator: "\n")]]
+    }
     let title = string(window, kAXTitleAttribute) ?? ""
     var header = ["Window: \"\(title)\", App: \(session.name).",
                   "\(elements.count) elements. Use these numbers in act; they change after each call."]
     if elements.count >= maxElements { header.append("The tree was cut at \(maxElements) elements.") }
     // Guides: one list of element frames (Window Server coordinates) for the tree lines, the picture and the user's window.
     let bounds = frame(window) ?? .zero
-    let frames: [CGRect?] = guides ? elements.map(frame) : []
+    let frames: [CGRect?] = guides ? elements.prefix(windowCount).map(frame) : []
     let allBoxes = guideBoxes(frames, within: bounds)
     let boxes = Array(allBoxes.prefix(maxGuideBoxes))
     let jpeg = screenshot ? capture(session: session, window: window, guides: guides ? boxes : nil) : nil
@@ -280,6 +308,13 @@ func state(of session: Session, screenshot: Bool, guides: Bool = false) throws -
     return content
 }
 
+private func popoverWindowID(_ popover: AXUIElement) -> CGWindowID? {
+    guard let address = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "_AXUIElementGetWindow") else { return nil }
+    let windowID = unsafeBitCast(address, to: (@convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError).self)
+    var id = kCGNullWindowID
+    return windowID(popover, &id) == .success && id != kCGNullWindowID ? id : nil
+}
+
 /// A JPEG of the window as base64, at most 1280 points wide, or nil. With guides (element frames in Window
 /// Server coordinates), the measurement guides are drawn on it.
 /// screencapture(1), not SCScreenshotManager: replayd serves one live process per executable file, so a
@@ -290,20 +325,27 @@ func capture(session: Session, window: AXUIElement, guides: [GuideBox]? = nil) -
     func rect(_ window: [String: Any]) -> CGRect? {
         (window[kCGWindowBounds as String] as? NSDictionary).flatMap { CGRect(dictionaryRepresentation: $0) }
     }
-    let windows = (CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] ?? []).filter {
-        ($0[kCGWindowOwnerPID as String] as? pid_t) == pid && ($0[kCGWindowLayer as String] as? Int) == 0
+    let popover = string(window, kAXRoleAttribute) == kAXPopoverRole
+    let windows = (CGWindowListCopyWindowInfo(popover ? .optionOnScreenOnly : .optionAll, kCGNullWindowID) as? [[String: Any]] ?? []).filter {
+        ($0[kCGWindowOwnerPID as String] as? pid_t) == pid && (popover || ($0[kCGWindowLayer as String] as? Int) == 0)
     }
-    guard let target = windows.first(where: { rect($0) == bounds }) ?? windows.first,
-          let number = target[kCGWindowNumber as String] as? Int, let frame = rect(target)
+    let target: [String: Any]?
+    if popover, let id = popoverWindowID(window) {
+        target = windows.first { $0[kCGWindowNumber as String] as? CGWindowID == id }
+    } else {
+        target = windows.first(where: { rect($0) == bounds }) ?? (popover ? nil : windows.first)
+    }
+    guard let target, let number = target[kCGWindowNumber as String] as? Int, let windowFrame = rect(target)
     else { return nil }
     let file = FileManager.default.temporaryDirectory.appendingPathComponent("mac-cu-\(getpid())-window.png")
     defer { try? FileManager.default.removeItem(at: file) }
     guard shell("/usr/sbin/screencapture", ["-l", String(number), "-x", "-o", "-t", "png", file.path], timeout: 5).status == 0,
           let image = NSImage(contentsOf: file)?.cgImage(forProposedRect: nil, context: nil, hints: nil)
     else { return nil }
-    let scale = min(1, 1280 / max(frame.width, 1))
+    let size = popover ? bounds.size : windowFrame.size
+    let scale = min(1, 1280 / max(size.width, 1))
     session.screenshotScale = scale
-    return try? jpegBase64(image, size: CGSize(width: frame.width * scale, height: frame.height * scale),
+    return try? jpegBase64(image, size: CGSize(width: size.width * scale, height: size.height * scale),
                            guides: guides?.map { GuideBox(number: $0.number, rect: pixelRect($0.rect, window: bounds, scale: scale)) })
 }
 
@@ -627,6 +669,24 @@ func scroll(_ node: AXUIElement, direction: String, pages: Double, pid: pid_t) t
 
 // MARK: - act
 
+@discardableResult
+func restoreFrontApp(_ previous: NSRunningApplication) -> Bool {
+    guard !previous.isTerminated else { return false }
+    let front = previous.processIdentifier
+    // activate() alone does nothing from mac-cu (a background process): set it front as bringToFront does.
+    AXUIElementSetAttributeValue(AXUIElementCreateApplication(front), kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+    previous.activate()
+    for _ in 0..<20 where frontmostPID() != front { usleep(50_000) }
+    if frontmostPID() != front, let url = previous.bundleURL {
+        // Some apps (Electron, for example Claude) ignore both: Launch Services activates them, as `open -a` does.
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+        for _ in 0..<40 where frontmostPID() != front { usleep(50_000) }
+    }
+    return frontmostPID() == front
+}
+
 /// Bring the app and its front window to the front, and wait until it is in front.
 func bringToFront(_ session: Session) {
     if let window = frontWindow(of: session) { AXUIElementPerformAction(window, kAXRaiseAction as CFString) }
@@ -662,6 +722,10 @@ func act(_ actions: [[String: Any]], session: Session, foreground asked: Bool, s
     let steps = mode["show"] == "steps"
     let pid = session.pid
     let front = frontmostPID()
+    let held = currentSession?.popoverFocus
+    let continuingPopover = front == pid && held?.app === session && held?.popover == statusPopover(in: statusItems(of: session))
+    let previousApp = continuingPopover ? held?.previous : front.flatMap(NSRunningApplication.init(processIdentifier:))
+    currentSession?.popoverFocus = nil
     var log: [String] = []
     var failed: String?
     let pointer = CGEvent(source: nil)?.location
@@ -704,23 +768,20 @@ func act(_ actions: [[String: Any]], session: Session, foreground asked: Bool, s
     }
     if steps { showStep(failed == nil ? "끝 · 동작 \(shown.count)개" : "멈춤 · 동작이 실패함", goal: goal, pid: pid) }
     usleep(250_000)  // Let the app update its window.
-    // The app that was in front goes back to the front: after foreground actions, and when the app
-    // came to the front by itself (for example Chrome when it opens a window).
-    if let front, front != pid, frontmostPID() == pid, let previous = NSRunningApplication(processIdentifier: front) {
-        // activate() alone does nothing from mac-cu (a background process): set it front as bringToFront does.
-        AXUIElementSetAttributeValue(AXUIElementCreateApplication(front), kAXFrontmostAttribute as CFString, kCFBooleanTrue)
-        previous.activate()
-        for _ in 0..<20 where frontmostPID() != front { usleep(50_000) }
-        if frontmostPID() != front, let url = previous.bundleURL {
-            // Some apps (Electron, for example Claude) ignore both: Launch Services activates them, as `open -a` does.
-            let configuration = NSWorkspace.OpenConfiguration()
-            configuration.activates = true
-            NSWorkspace.shared.openApplication(at: url, configuration: configuration)
-            for _ in 0..<40 where frontmostPID() != front { usleep(50_000) }
-        }
-        if frontmostPID() != front { log.append("\(previous.localizedName ?? "The previous app") did not come back to the front.") }
-        if !foreground {
-            log.append("\(session.name) came to the front by itself; \(previous.localizedName ?? "the previous app") is in front again.")
+    if let previous = previousApp, previous.processIdentifier != pid, frontmostPID() == pid {
+        let popover = statusPopover(in: statusItems(of: session))
+        if let popover, foreground || continuingPopover, let client = currentSession {
+            client.popoverFocus = (session, popover, previous)
+            log.append("The status popover stays in front for interaction.")
+        } else {
+            if !restoreFrontApp(previous) {
+                log.append("\(previous.localizedName ?? "The previous app") did not come back to the front.")
+            } else if !foreground {
+                log.append("\(previous.localizedName ?? "The previous app") is in front again.")
+                if popover != nil && mode["input"] == "auto" {
+                    log.append("If the status popover closed, click the status item with foreground: true.")
+                }
+            }
         }
     }
     var content = try state(of: session, screenshot: screenshot, guides: guides)

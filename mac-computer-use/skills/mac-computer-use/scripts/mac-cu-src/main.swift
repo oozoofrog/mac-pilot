@@ -170,9 +170,9 @@ let tools: [[String: Any]] = [
     [
         "name": "get_app_state",
         "description": """
-            Read the front window of a Mac app as a numbered accessibility tree, in the background. \
+            Read a Mac app’s front window or open status-item popover and its menu-bar status items as a numbered accessibility tree. \
             Opens the app in the background when it does not run. Each line: number, role, "title", \
-            desc/value/placeholder, [actions], flags. Use the numbers with act. With screenshot, also \
+            id/desc/value/placeholder, [actions], flags. Use the numbers with act. With screenshot, also \
             returns a picture; click_at and drag use its pixels.
             """,
         "inputSchema": [
@@ -205,7 +205,7 @@ let tools: [[String: Any]] = [
                 "app": ["type": "string", "description": "Same app name as in get_app_state."],
                 "actions": ["type": "array", "items": actionSchema],
                 "foreground": ["type": "boolean", "description": """
-                    Bring the app to the front for these actions, then put the previous app back in front. \
+                    Bring the app to the front. Restore the previous app after the actions, or when a status popover is dismissed with act. \
                     Only after the same actions did nothing in the background: it interrupts the user. \
                     The user's input mode can refuse it (background) or use it for every act (foreground).
                     """],
