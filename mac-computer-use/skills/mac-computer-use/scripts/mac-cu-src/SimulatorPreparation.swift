@@ -2,9 +2,17 @@ import Foundation
 import Darwin
 
 struct SimulatorPreparationError: LocalizedError {
+    enum Kind { case other, failed, timedOut, cancelled }
     let message: String
+    var kind = Kind.other
+    /// For `failed`: the child's exit status and standard error, unformatted.
+    var status: Int32 = 0
+    var standardError = ""
     var errorDescription: String? { message }
     init(_ message: String) { self.message = message }
+    init(_ message: String, kind: Kind, status: Int32 = 0, standardError: String = "") {
+        self.message = message; self.kind = kind; self.status = status; self.standardError = standardError
+    }
 }
 
 struct PreparedSimulatorType {
@@ -112,7 +120,7 @@ final class SimulatorPreparationTask {
     func cancel() { lock.withLock { cancelled = true } }
     var isCancelled: Bool { lock.withLock { cancelled } }
     func checkCancellation() throws {
-        if lock.withLock({ cancelled }) { throw SimulatorPreparationError("작업이 취소되었습니다. 이미 생성·설치·실행된 항목은 유지합니다. 목록을 새로고침하세요.") }
+        if lock.withLock({ cancelled }) { throw SimulatorPreparationError("작업이 취소되었습니다. 이미 생성·설치·실행된 항목은 유지합니다. 목록을 새로고침하세요.", kind: .cancelled) }
     }
     func run(_ executable: String, _ arguments: [String], timeout: TimeInterval = 60, stream: Bool = true) throws -> String {
         try checkCancellation()
@@ -190,9 +198,13 @@ final class SimulatorPreparationTask {
         drain(err, into: &stderr, limit: 65_536)
         if stream && !pendingOutput.isEmpty { onOutput(String(decoding: pendingOutput, as: UTF8.self)) }
         try checkCancellation()
-        if timedOut { throw SimulatorPreparationError("제한 시간을 초과했습니다. 이미 준비한 항목은 유지합니다. 목록을 새로고침하세요.") }
+        if timedOut { throw SimulatorPreparationError("제한 시간을 초과했습니다. 이미 준비한 항목은 유지합니다. 목록을 새로고침하세요.", kind: .timedOut) }
         let text = String(decoding: stdout, as: UTF8.self)
-        guard status == 0 else { throw SimulatorPreparationError("명령이 완료되지 않았습니다 (종료 상태 \(status)).\n\(String(decoding: stderr, as: UTF8.self).suffix(4000))\n\(text.suffix(2000))") }
+        guard status == 0 else {
+            let errorText = String(String(decoding: stderr, as: UTF8.self).suffix(4000))
+            throw SimulatorPreparationError("명령이 완료되지 않았습니다 (종료 상태 \(status)).\n\(errorText)\n\(text.suffix(2000))",
+                                            kind: .failed, status: status, standardError: errorText)
+        }
         if exceeded && !stream { throw SimulatorPreparationError("목록 응답이 너무 큽니다. Xcode에서 기기 상태를 확인하세요.") }
         return text
     }
@@ -270,5 +282,23 @@ final class SimulatorPreparationBackend {
             guard changed else { throw SimulatorPreparationError("가져오기 명령은 끝났지만 새로 사용 가능해진 런타임은 확인하지 못했습니다. 이미 설치된 이미지일 수 있습니다. 목록을 확인하세요.") }
         }
         return after
+    }
+}
+
+extension SimulatorPreparationError {
+    /// English text for an agent about a failed child command, without the preparation window's Korean guidance.
+    /// `prefix` is a line marker the child writes before its own message; it is removed so it is not repeated.
+    func agentText(command: String, prefix: String = "") -> String {
+        switch kind {
+        case .cancelled: return "\(command) was cancelled."
+        case .timedOut: return "\(command) timed out."
+        case .failed:
+            let lines = standardError.split(whereSeparator: \.isNewline).map { line -> String in
+                let text = line.trimmingCharacters(in: .whitespaces)
+                return !prefix.isEmpty && text.hasPrefix(prefix) ? String(text.dropFirst(prefix.count)) : text
+            }.filter { !$0.isEmpty }
+            return lines.isEmpty ? "\(command) failed (exit status \(status))." : lines.joined(separator: "\n")
+        case .other: return "\(command) failed: \(message)"
+        }
     }
 }

@@ -2,7 +2,7 @@
 // D=/Volumes/eyedisk/build/mac-pilot/device-tool; S=mac-computer-use/skills/mac-computer-use/scripts/mac-cu-src
 // { sed -n '1,/^@main struct HIDTransportSelfcheck/ p' mac-computer-use/tests/hid-transport-selfcheck.swift | sed '$d'; sed -n '/^final class HIDLink {/,/^var hidLinks:/p' "$S/Simulator.swift" | sed '$d'; sed -n '/^let usKeys:/,/^\/\/ MARK: - Pasteboard/p' "$S/Simulator.swift" | sed '$d'; } > "$D/device-stubs.swift"
 // export TMPDIR="$D" CLANG_MODULE_CACHE_PATH="$D/cache"; FLAGS=$(python3 mac-computer-use/skills/mac-computer-use/scripts/native_build.py --emit-stub-modules "$D/modules")  # bash; in zsh use ${=FLAGS}
-// swiftc -parse-as-library $FLAGS "$D/device-stubs.swift" "$S/SimulatorGestureHID.swift" "$S/PhysicalDeviceLink.swift" "$S/PhysicalDeviceSession.swift" "$S/Device.swift" "$S/DeviceHubView.swift" mac-computer-use/tests/device-tool-selfcheck.swift -o "$D/device-selfcheck" && "$D/device-selfcheck"
+// swiftc -parse-as-library $FLAGS "$D/device-stubs.swift" "$S/SimulatorGestureHID.swift" "$S/PhysicalDeviceLink.swift" "$S/PhysicalDeviceSession.swift" "$S/Device.swift" mac-computer-use/tests/device-tool-selfcheck.swift -o "$D/device-selfcheck" && "$D/device-selfcheck"
 import AppKit
 import XPC
 
@@ -14,6 +14,16 @@ let currentSession: SessionStub? = nil
 
 @main struct DeviceSelfcheck {
     static func main() throws {
+        if ProcessInfo.processInfo.environment["DEVICE_EXPECT_NO_COREDEVICE"] == "1" {
+            let outcome = PhysicalDeviceLink().inProcessCheck()
+            guard case .unavailable(let reason) = outcome,
+                  !coreDeviceImagesBound(),
+                  reason.contains("not bound at launch") || reason.contains("framework missing") else {
+                fatalError("expected CoreDevice to be unbound: \(outcome)")
+            }
+            print("no-coredevice selfcheck passed: \(reason)")
+            return
+        }
         let a = UUID(), b = UUID(), size = CGSize(width: 200, height: 400)
         let devices = [a, b].map { PhysicalDeviceInfo(identifier: $0, name: "same", model: nil, osVersion: "iOS 27", transport: nil, connectionState: "Connected", pairingState: nil) }
         var locked = false, events: [xpc_object_t] = []
@@ -23,7 +33,7 @@ let currentSession: SessionStub? = nil
         let tool = DeviceTool(backend)
         func resultText(_ result: [String: Any]) -> String { ((result["content"] as! [[String: Any]])[0]["text"] as! String) }
         let listing = try resultText(tool.call(["action": "list"]))
-        precondition(listing.contains("| iOS 27 |") && !listing.contains("iOS iOS"))
+        precondition(listing.contains("| iOS 27 |") && !listing.contains("iOS iOS") && !listing.contains("Device Hub"))
         func call(_ action: String, _ id: String, _ extra: [String: Any] = [:]) throws { var args = extra; args["action"] = action; args["device"] = id; _ = try tool.call(args) }
         func refuses(_ body: () throws -> Void) { do { try body(); fatalError("expected refusal") } catch {} }
         var xctestBackend = backend
@@ -42,6 +52,50 @@ let currentSession: SessionStub? = nil
         refuses { try xctest.checkXCTestAccess(b) }
         _ = try xctest.call(["action": "allow", "device": b.uuidString])
         refuses { try xctest.checkXCTestAccess(b) }
+        // Physical iPad: supports USB XCTest, landscape/portrait screenshots and sensor_replay; refuses Device Hub view and raw HID.
+        let tabletDisplay = PhysicalDisplayState.primary(pixels: CGSize(width: 1640, height: 2360), scale: 2, rotation: "rot270", orientation: "landscapeLeft")
+        let tabletInfo = PhysicalDeviceInfo(identifier: a, name: "tablet", model: nil, osVersion: "iPadOS 27",
+                                            transport: "wired", connectionState: "Connected", pairingState: "paired", hardwareUDID: "wired-pad", isIPad: true)
+        precondition(tabletDisplay.points(for: tabletInfo) == CGSize(width: 1180, height: 820))
+        precondition(tabletDisplay.points(for: devices[0]) == nil)
+        var tabletBackend = backend
+        tabletBackend.list = { [tabletInfo,
+                                PhysicalDeviceInfo(identifier: b, name: "wifi-pad", model: nil, osVersion: "iPadOS 27",
+                                                   transport: "localNetwork", connectionState: "Connected", pairingState: "paired", hardwareUDID: "wifi-pad", isIPad: true)] }
+        tabletBackend.display = { tabletDisplay.points(for: $0)! }
+        tabletBackend.xctestLocked = { _ in locked }
+        let tablet = DeviceTool(tabletBackend)
+        let tabletList = try resultText(tablet.call(["action": "list"]))
+        precondition(tabletList.contains("| iPadOS 27 |") && !tabletList.contains("Device Hub"))
+        refuses { try tablet.checkFixtureAccess(a) }
+        refuses { try tablet.checkXCTestAccess(a) }
+        _ = try tablet.call(["action": "allow", "device": a.uuidString])
+        try tablet.checkFixtureAccess(a)
+        let tabletXCTest = try tablet.checkXCTestAccess(a)
+        precondition(tabletXCTest.hardwareUDID == "wired-pad" && tabletXCTest.isIPad)
+        let tabletShot = try resultText(tablet.call(["action": "screenshot", "device": a.uuidString]))
+        precondition(tabletShot.contains("1180×820") && tabletShot.contains("XCTest"))
+        refuses { _ = try tablet.call(["action": "view", "device": a.uuidString]) }
+        refuses { _ = try tablet.call(["action": "window", "device": a.uuidString]) }
+        refuses { _ = try tablet.call(["action": "tap", "device": a.uuidString, "x": 10, "y": 10]) }
+        locked = true
+        refuses { try tablet.checkFixtureAccess(a) }
+        refuses { try tablet.checkXCTestAccess(a) }
+        locked = false
+        _ = try tablet.call(["action": "allow", "device": b.uuidString])
+        refuses { try tablet.checkXCTestAccess(b) }
+        // Watch fixture access falls back to devicectl lock state when in-process CoreDevice is off.
+        var watchFallbackBackend = backend
+        watchFallbackBackend.list = { [PhysicalDeviceInfo(identifier: a, name: "watch", model: nil, osVersion: "watchOS 27",
+            transport: "localNetwork", connectionState: "Connected", pairingState: "paired", isAppleWatch: true)] }
+        watchFallbackBackend.xctestLocked = { _ in throw ToolError("XCTest requires the in-process CoreDevice lock check.") }
+        let watchFallback = DeviceTool(watchFallbackBackend)
+        _ = try watchFallback.call(["action": "allow", "device": a.uuidString])
+        try watchFallback.checkFixtureAccess(a)
+        locked = true
+        do { try watchFallback.checkFixtureAccess(a); fatalError("expected watch lock refusal") }
+        catch let error as ToolError { precondition(error.localizedDescription.contains("Unlock") && !error.localizedDescription.contains("XCTest")) }
+        locked = false
         refuses { try call("tap", a.uuidString, ["x": 1, "y": 1]) }
         refuses { try call("allow", "same") }
         try call("allow", a.uuidString)
@@ -84,27 +138,10 @@ let currentSession: SessionStub? = nil
         precondition(events.count == before)
         let missing = DeviceTool(DeviceBackend(list: { throw PhysicalDeviceError.frameworkMissing("test") }, locked: { _ in false }, display: { _ in size }, screenshot: { _, _ in "" }, open: { _, _ in fatalError() }))
         do { _ = try missing.call(["action": "list"]); fatalError("expected missing") } catch PhysicalDeviceError.frameworkMissing { }
-        // Device Hub view: only the allowed device; it reads no device state and sends no input; focus is passed through.
-        var views: [(UUID, String, Bool)] = [], viewCalls = 0
-        let viewing = DeviceTool(DeviceBackend(list: { devices }, locked: { _ in fatalError("view reads no lock state") },
-                                               display: { _ in fatalError("view reads no display") }, screenshot: { _, _ in fatalError() },
-                                               open: { _, _ in fatalError("view sends no input") }, view: { id, name, focus in
-            viewCalls += 1; views.append((id, name, focus)); return "opened in Device Hub"
-        }))
-        refuses { _ = try viewing.call(["action": "view", "device": a.uuidString]) }
-        precondition(viewCalls == 0)
-        _ = try viewing.call(["action": "allow", "device": a.uuidString])
-        refuses { _ = try viewing.call(["action": "view", "device": b.uuidString]) }
-        refuses { _ = try viewing.call(["action": "view", "device": "same"]) }
-        let viewText = try resultText(viewing.call(["action": "view", "device": a.uuidString])); precondition(viewText == "opened in Device Hub")
-        _ = try viewing.call(["action": "window", "device": a.uuidString, "focus": true])  // the earlier name
-        precondition(views.count == 2 && views.allSatisfy { $0.0 == a && $0.1 == "same" } && !views[0].2 && views[1].2)
-        let closeText = try resultText(viewing.call(["action": "view", "device": a.uuidString, "close": true])); precondition(closeText.contains("does not close Device Hub") && viewCalls == 2)
-        let listText = try resultText(viewing.call(["action": "list"])); precondition(listText.contains("Device Hub: device action view"))
-        let releaseText = try resultText(viewing.call(["action": "release"])); precondition(releaseText.contains("stays open"))
-        refuses { _ = try viewing.call(["action": "view", "device": a.uuidString]) }
-        precondition(viewCalls == 2)
-        refuses { _ = try tool.call(["action": "view", "device": b.uuidString]) }  // allowed, but this backend has no view
+        refuses { _ = try tool.call(["action": "view", "device": b.uuidString]) }
+        refuses { _ = try tool.call(["action": "window", "device": b.uuidString]) }
+        let releaseText = try resultText(tool.call(["action": "release"]))
+        precondition(!releaseText.contains("Device Hub"))
         // Physical routing and barrier: each message goes to its feature's connection, the barrier to the features the
         // action used, and the result says drained only when every one was answered (else the earlier fixed wait).
         var routed: [String: [xpc_object_t]] = [:], barriers: [String] = [], opened: [Set<String>] = []
@@ -153,6 +190,6 @@ let currentSession: SessionStub? = nil
         precondition(routed.values.map(\.count).reduce(0, +) == sentBefore)
         let barrierMessage = PhysicalHIDLink.barrierMessage()
         precondition(xpc_dictionary_get_count(barrierMessage) == 1 && xpc_dictionary_get_bool(barrierMessage, "isBarrier"))
-        print("device selfcheck passed: allow, pinning, lock, late lock, length cap, cancel, validation, HID recorder, missing CoreDevice, Device Hub view policy, button feature routing, barrier drain and fallback")
+        print("device selfcheck passed: allow, pinning, lock, late lock, length cap, cancel, validation, iPad XCTest/screenshot, HID recorder, missing CoreDevice, Device Hub exclusion, button feature routing, barrier drain and fallback")
     }
 }

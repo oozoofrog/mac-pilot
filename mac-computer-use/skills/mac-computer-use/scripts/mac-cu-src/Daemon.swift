@@ -26,7 +26,7 @@ let daemonBundleID = "com.kakao.mac-cu"
 
 /// The Korean tool names of the Claude Code band (hooks/register.tsx TOOLS).
 let toolNames = ["act": "앱 조작", "get_app_state": "창 읽기", "browser": "브라우저", "simulator": "시뮬레이터",
-                 "webinspector": "웹 인스펙터", "decide": "판단"]
+                 "webinspector": "웹 인스펙터", "device": "실기기", "sensor_replay": "센서 재생", "decide": "판단"]
 
 /// "1.14.0" is newer than "1.13.2".
 func isNewer(_ a: String, than b: String) -> Bool {

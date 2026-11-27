@@ -78,3 +78,11 @@ iPhone Duo에서 확인한 차이다.
 - mac-cu `simulator`로 화면을 다루는 방법은 [drive.md](drive.md)의 "iPhone Duo" 절을 따른다.
 
 바꾼 설정(Face ID 등록, 회전, 손쉬운 사용, VoiceOver, 상태 막대)은 확인이 끝나면 되돌린다. `settings reset`은 기기의 모든 데이터를 지우므로 실행 전에 확인한다.
+
+## 앱 내 센서 타임라인 재생 (`mac-cu` `sensor_replay`)
+
+개발자가 제어하는 테스트 앱에 `mac-computer-use` 패키지의 `MacPilotSensorReplay` 동적 라이브러리를 **Embed & Sign**으로 연결해 둔 경우, 마이크 PCM·카메라 프레임·모션(가속도·회전·걸음수)·위치·운동 이벤트를 하나의 단조 시계 기준으로 재생할 수 있다.
+
+- 부팅된 시뮬레이터 UDID, 앱 번들 ID(`app`), 버전 1 픽스처 JSON 절대 경로(`fixture`)로 `sensor_replay`(`platform: "simulator"`)를 호출한다.
+- 다른 에이전트 세션이 `sim-pilot`으로 점유 중인 시뮬레이터에는 스테이징이 거절된다. 빈 시뮬레이터에 스테이징하면 `simulator` 입력과 같이 이 세션의 자동 사용 기록이 남는다.
+- 픽스처 형식과 앱 연동 코드는 `mac-computer-use` 스킬의 `references/sensor-replay.md`를 따른다.

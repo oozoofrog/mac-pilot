@@ -6,7 +6,11 @@ import XPC
 
 let hidService = "com.apple.coredevice.feature.remote.hid.digitizer"
 let vendorService = "com.apple.coredevice.feature.remote.hid.vendordefined"
-struct ToolError: Error { init(_ text: String) {} }
+struct ToolError: Error, LocalizedError {
+    let message: String
+    init(_ text: String) { message = text }
+    var errorDescription: String? { message }
+}
 struct ActiveScreen {
     let target: UInt64 = 0
     let foldable = false

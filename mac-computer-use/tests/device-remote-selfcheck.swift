@@ -7,7 +7,7 @@
 // export TMPDIR="$D" CLANG_MODULE_CACHE_PATH="$D/cache"
 // { sed -n '1,/^@main struct HIDTransportSelfcheck/ p' mac-computer-use/tests/hid-transport-selfcheck.swift | sed '$d'; sed -n '/^final class HIDLink {/,/^var hidLinks:/p' "$S/Simulator.swift" | sed '$d'; sed -n '/^let usKeys:/,/^\/\/ MARK: - Pasteboard/p' "$S/Simulator.swift" | sed '$d'; } > "$D/remote-stubs.swift"
 // FLAGS=$(python3 mac-computer-use/skills/mac-computer-use/scripts/native_build.py --emit-stub-modules "$D/modules")  # bash; in zsh use ${=FLAGS}
-// swiftc -parse-as-library $FLAGS "$D/remote-stubs.swift" "$S/SimulatorGestureHID.swift" "$S/PhysicalDeviceLink.swift" "$S/PhysicalDeviceSession.swift" "$S/Device.swift" "$S/DeviceHubView.swift" mac-computer-use/tests/device-remote-selfcheck.swift -o "$D/device-remote-selfcheck" && "$D/device-remote-selfcheck"
+// swiftc -parse-as-library $FLAGS "$D/remote-stubs.swift" "$S/SimulatorGestureHID.swift" "$S/PhysicalDeviceLink.swift" "$S/PhysicalDeviceSession.swift" "$S/Device.swift" mac-computer-use/tests/device-remote-selfcheck.swift -o "$D/device-remote-selfcheck" && "$D/device-remote-selfcheck"
 import AppKit
 import XPC
 

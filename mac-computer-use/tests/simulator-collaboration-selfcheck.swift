@@ -123,6 +123,12 @@ import Foundation
         let lines = simulatorCollaborationLines(udids: [a.lowercased(), b], identity: self1, store: host2)
         expect(lines[a] == "used by this session; waited for by Codex · Pressleaf · 곧 필요" && lines[b] == nil, "list lines: \(lines)")
         expect(simulatorCollaborationLines(udids: [a], identity: self2, store: host2)[a]?.hasPrefix("used by Claude Code · Cards") == true, "another session sees the holder")
+        expect(simulatorClaimByAnother(udid: b, identity: self2, store: host2, now: now) == nil, "free simulator has no other holder")
+        expect(simulatorClaimByAnother(udid: a, identity: self1, store: host2, now: now) == nil, "own simulator claim is allowed")
+        expect(simulatorClaimByAnother(udid: a, identity: AgentIdentity(agent: "Claude Code", session: "rotated", pid: self1.pid), store: host2, now: now) == nil,
+               "same process under rotated session id still owns claim")
+        expect(simulatorClaimByAnother(udid: a, identity: self2, store: host2, now: now)?.by == "one", "other session claim blocks sensor staging")
+        expect(simulatorClaimByAnother(udid: a, identity: nil, store: host2, now: now)?.by == "one", "anonymous caller cannot bypass an active claim")
         expect(agentIdentity(hello: ["identity": self1.json], agent: "T3 Code", peer: 5) == self1, "the hello's identity is used")
         expect(agentIdentity(hello: [:], agent: "T3 Code", peer: 5, parent: { _ in 40 }) == AgentIdentity(agent: "T3 Code", session: "pid 40", pid: 40), "an older client is known by the agent process that started it")
         expect(agentIdentity(hello: [:], agent: "T3 Code", peer: 5, parent: { _ in 1 }).pid == 5, "or by its own process when launchd started it")

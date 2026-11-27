@@ -56,6 +56,7 @@ def main():
     command = ["xcodebuild", "-project", str(project), "-scheme", "MacPilotRunner", "-configuration", "Debug",
                "-destination", f"generic/platform={args.platform}", "-derivedDataPath", str(build),
                "OBJROOT=" + str(build / "Build/Intermediates.noindex"), "SYMROOT=" + str(build / "Build/Products"),
+               "SHARED_PRECOMPS_DIR=" + str(build / "Build/Intermediates.noindex/PrecompiledHeaders"),
                "CLANG_MODULE_CACHE_PATH=" + str(build / "ModuleCache.noindex"),
                "CODE_SIGN_STYLE=Automatic", "DEVELOPMENT_TEAM=" + args.team, "COMPILER_INDEX_STORE_ENABLE=NO"]
     subprocess.run(command + ["build-for-testing"], check=True, stdout=sys.stderr)

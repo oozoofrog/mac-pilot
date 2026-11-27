@@ -113,6 +113,12 @@ struct SimulatorPreparationSelfcheck {
         assert(unrelated.isRunning && Date().timeIntervalSince(beforeFlood) < 3)
         let overflow = SimulatorPreparationTask()
         fails("목록 응답이 너무 큽니다") { _ = try overflow.run("/bin/sh", ["-c", "head -c 9000000 /dev/zero"], timeout: 10, stream: false) }
+        assert(SimulatorPreparationError("취소", kind: .cancelled).agentText(command: "Sensor replay staging") == "Sensor replay staging was cancelled.")
+        assert(SimulatorPreparationError("초과", kind: .timedOut).agentText(command: "Sensor replay staging") == "Sensor replay staging timed out.")
+        let childFailed = SimulatorPreparationError("명령이 완료되지 않았습니다", kind: .failed, status: 1, standardError: "  Sensor replay: Expected version 1. \n")
+        assert(childFailed.agentText(command: "Sensor replay staging", prefix: "Sensor replay: ") == "Expected version 1.")
+        let silentFailed = SimulatorPreparationError("명령이 완료되지 않았습니다", kind: .failed, status: 2, standardError: " \n ")
+        assert(silentFailed.agentText(command: "Sensor replay staging", prefix: "Sensor replay: ") == "Sensor replay staging failed (exit status 2).")
         print("PASS preparation task: argument boundaries, stdout/stderr separation, environment filtering, bounded output, spawn/exit errors, preflight/in-flight cancellation, ignored TERM, descendants, timeout and unrelated process survival")
     }
 }

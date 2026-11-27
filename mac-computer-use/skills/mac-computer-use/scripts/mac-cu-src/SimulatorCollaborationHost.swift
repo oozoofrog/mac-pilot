@@ -76,3 +76,11 @@ func simulatorCollaborationLines(udids: [String], identity: AgentIdentity?, stor
     }
     return lines
 }
+
+/// The claim of another session on a simulator, or nil when it is free or this session's. Staged sensor fixtures are
+/// consumed by whichever app listens, so writing to a device another session holds would hand that session our data.
+func simulatorClaimByAnother(udid: String, identity: AgentIdentity?, store: CollaborationStore = .standard,
+                             now: Date = Date()) -> DeviceClaim? {
+    guard let claim = store.state(now: now).claims[udid.uppercased()] else { return nil }
+    return identity?.owns(claim) == true ? nil : claim
+}

@@ -151,7 +151,7 @@ final class MacPilotTests: XCTestCase {
                 var row: [String: Any] = ["depth": depth, "type": item.elementType.rawValue,
                                           "identifier": String(item.identifier.prefix(256)), "label": String(item.label.prefix(256)),
                                           "enabled": item.isEnabled]
-                if item.elementType == .staticText, let value = item.value as? String {
+                if let value = item.value as? String, item.elementType == .staticText || !value.isEmpty {
                     row["value"] = String(value.prefix(256))
                 }
                 rows.append(row)

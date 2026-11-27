@@ -5,6 +5,7 @@ __pycache__/
 .build/
 dist/
 /.agent-loop/
+/.antigravitycli/
 *.new
 # Runtime and user state are local; source-only releases never include them.
 /mac-computer-use/docs/development/

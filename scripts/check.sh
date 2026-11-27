@@ -7,6 +7,15 @@ python3 -B mac-computer-use/tests/test_native_build.py
 src=mac-computer-use/skills/mac-computer-use/scripts/mac-cu-src
 out="$(mktemp -d "${TMPDIR:-/tmp}/mac-pilot-check.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
+swift test --package-path mac-computer-use/skills/mac-computer-use/sensor-replay --scratch-path "$out/sensor-replay"
+replay=mac-computer-use/skills/mac-computer-use/sensor-replay
+for sdk_target in "iphoneos arm64-apple-ios16.0" "iphonesimulator arm64-apple-ios16.0-simulator" "watchos arm64-apple-watchos9.0" "watchsimulator arm64-apple-watchos9.0-simulator"; do
+    read -r sdk target <<< "$sdk_target"
+    swiftc -typecheck -parse-as-library -sdk "$(xcrun --sdk "$sdk" --show-sdk-path)" -target "$target" "$replay/Sources/MacPilotSensorReplay/SensorReplay.swift"
+done
+swiftc "$replay/Sources/MacPilotSensorReplay/SensorReplay.swift" "$src/SimulatorPreparation.swift" "$replay/Tools/SensorReplayStage.swift" "$replay/Tools/main.swift" -o "$out/macpilot-sensor-replay"
+swiftc -parse-as-library -DSENSOR_REPLAY_DELIVERY_SELFCHECK "$replay/Sources/MacPilotSensorReplay/SensorReplay.swift" "$src/SimulatorPreparation.swift" "$src/SimulatorCollaboration.swift" "$src/SimulatorCollaborationHost.swift" "$src/SensorReplayDelivery.swift" "$replay/Tools/SensorReplayStage.swift" mac-computer-use/tests/sensor-replay-staging-selfcheck.swift -o "$out/sensor-replay-staging"
+"$out/sensor-replay-staging" "$out/macpilot-sensor-replay"
 python3 -B "$(dirname "$src")/native_build.py" -typecheck "$src"/*.swift
 python3 -B mac-computer-use/tests/simulator-ax-adapter/run.py
 python3 -B mac-computer-use/tests/simulator-ax-inspection/run.py
@@ -36,7 +45,7 @@ swiftc -parse-as-library "$src/SimulatorPreparation.swift" mac-computer-use/test
 "$out/preparation"
 swiftc -parse-as-library "$src/SimulatorPreparation.swift" "$src/SimulatorPreparationWindow.swift" mac-computer-use/tests/native-selfcheck-entry.swift mac-computer-use/tests/simulator-preparation-fixtures.swift mac-computer-use/tests/simulator-preparation-window-selfcheck.swift -o "$out/preparation-window"
 python3 mac-computer-use/tests/native_check_support.py --selfcheck "$out/preparation-window" --timeout 30
-# Physical device tool, offline: fakes stand in for the device and Device Hub; nothing is sent to a device and no
+# Physical device tool, offline: fakes stand in for the device; nothing is sent to a device and no
 # window opens. Needs Xcode (CoreDevice) installed. The live check (check-device-live.py) needs a device and stays out.
 device="$out/device"
 mkdir -p "$device"
@@ -51,19 +60,19 @@ mkdir -p "$device"
     swiftc -parse-as-library "$device/hid-link.swift" "$src/SimulatorGestureHID.swift" mac-computer-use/tests/hid-transport-selfcheck.swift -o "$device/hid-transport"
     "$device/hid-transport"
     { sed -n '1,/^@main struct HIDTransportSelfcheck/ p' mac-computer-use/tests/hid-transport-selfcheck.swift | sed '$d'; hid_link; } > "$device/stubs.swift"
-    sources=("$device/stubs.swift" "$src/SimulatorGestureHID.swift" "$src/PhysicalDeviceLink.swift" "$src/PhysicalDeviceSession.swift" "$src/Device.swift" "$src/DeviceHubView.swift")
-    for check in device-tool device-remote device-hub; do
+    sources=("$device/stubs.swift" "$src/SimulatorGestureHID.swift" "$src/PhysicalDeviceLink.swift" "$src/PhysicalDeviceSession.swift" "$src/Device.swift")
+    for check in device-tool device-remote; do
         swiftc -parse-as-library $flags "${sources[@]}" "mac-computer-use/tests/$check-selfcheck.swift" -o "$device/$check"
         "$device/$check"
     done
     # Without CoreDevice: a copy whose CoreDevice load paths point nowhere still starts (every import is weak).
-    cp "$device/device-hub" "$device/no-coredevice"
+    cp "$device/device-tool" "$device/no-coredevice"
     for name in CoreDevice CoreDeviceUtilities; do
         old="$(otool -L "$device/no-coredevice" | awk "/\/$name.framework/{print \$1}")"
         install_name_tool -change "$old" "/nonexistent/$name.framework/$name" "$device/no-coredevice" 2>/dev/null
     done
     codesign -f -s - "$device/no-coredevice" 2>/dev/null
-    DEVICE_HUB_EXPECT_NO_COREDEVICE=1 "$device/no-coredevice"
+    DEVICE_EXPECT_NO_COREDEVICE=1 "$device/no-coredevice"
     swiftc -parse-as-library $flags "$src/PhysicalDeviceLink.swift" "$src/PhysicalDeviceSession.swift" mac-computer-use/tests/physical-device-link-selfcheck.swift -o "$device/physical-link"
     "$device/physical-link" --missing-runtime
 )

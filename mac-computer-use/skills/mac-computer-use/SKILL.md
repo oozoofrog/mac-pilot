@@ -1,6 +1,6 @@
 ---
 name: mac-computer-use
-description: Operate Mac apps, browser pages, iOS web views, physical iPhones and Apple Watch with the mac-cu MCP server. Use for desktop UI tasks without a better API or CLI, web view inspection, input and screenshots on a connected iPhone or paired Apple Watch, or mac-cu setup, modes and simulator preparation. Route iOS Simulator app launch, logs, test data and change verification through simulator-pilot.
+description: Operate Mac apps, browser pages, iOS web views, and physical iPhones, iPads and Apple Watch with the mac-cu MCP server. Use for desktop UI tasks without a better API or CLI, web view inspection, XCTest UI automation, input and screenshots on connected iPhones, iPads or paired Apple Watch, or mac-cu setup, modes and simulator preparation. Route iOS Simulator app launch, logs, test data and change verification through simulator-pilot.
 ---
 
 # Mac Computer Use for Claude Code and Codex
@@ -19,15 +19,17 @@ description: Operate Mac apps, browser pages, iOS web views, physical iPhones an
   closed. It needs no other tool (no AXe or idb).
 - iOS web views: it connects to the Web Inspector of booted simulators and USB devices without
   Safari, and inspects WKWebView and Safari pages.
-- Physical Apple Watch: select its own UUID with `device allow`, then use a signed watchOS runner with `xctestStart` for accessibility and element input. Use `screenshot`, `tap` or `swipe` for coordinate work. See [physical device](references/physical-device.md).
-- Physical iPhones: the `device` tool takes screenshots of a connected iPhone and sends touches,
-  keys and buttons to it over CoreDevice, without the Mac's pointer or keyboard. It needs Xcode. The
-  user watches the screen in Xcode's Device Hub, which `device` opens at that iPhone. A locally signed
-  MacPilot Runner adds XCTest accessibility queries and element input over USB.
+- Physical iPhones, iPads and Apple Watch: select a device UUID with `device allow`, then operate
+  apps through the locally signed MacPilot Runner over XCTest (`XCUIApplication`: `xctestStart`
+  through `xctestStop`) on USB iPhones, USB iPads and paired Apple Watch, and capture one-frame
+  screenshots (`screenshot`) without starting screen sharing or opening Xcode Device Hub. On
+  portrait iPhones and Apple Watch, coordinate touches (and iPhone US-layout keys and buttons) also
+  go over CoreDevice HID without touching the Mac's pointer or keyboard. Connected devices can also
+  receive `sensor_replay` fixtures. See [physical device](references/physical-device.md).
 
 ## 1. Setup check
 
-- If the mac-cu tools `get_app_state`, `act`, `browser`, `simulator`, `webinspector`, `device` and `decide` are available, go to step 2. Claude Code
+- If the mac-cu tools `get_app_state`, `act`, `browser`, `simulator`, `webinspector`, `device`, `sensor_replay` and `decide` are available, go to step 2. Claude Code
   names them `mcp__mac-cu__*`; Codex can show them as `mcp__mac_cu__*`.
 - If not, run the setup script. Replace `<SKILL_DIR>` with the folder that holds this SKILL.md, and
   `<AGENT>` with the agent that runs you: `claude` (Claude Code) or `codex` (Codex):
@@ -50,7 +52,7 @@ description: Operate Mac apps, browser pages, iOS web views, physical iPhones an
 
 **Permissions.** mac-cu.app itself (not the app that runs the agent) needs Accessibility for apps and
 Screen Recording for window screenshots (`screenshot`, decide `picture`). `simulator`,
-`webinspector` and `device` need neither permission. When one is missing, mac-cu asks macOS, opens its page in System Settings
+`webinspector`, `device` and `sensor_replay` need neither permission. When one is missing, mac-cu asks macOS, opens its page in System Settings
 and shows a panel below it with the mac-cu icon: the user drags the icon into the list. To check both
 again and show the guides (no build), the user or the agent runs:
 
@@ -76,9 +78,11 @@ or in `always-allow.txt` in the skill folder (one app name or bundle ID per line
 
 ## Operating the selected target
 
+For microphone, camera, motion, location or workout fixtures in a developer-controlled test app, use [sensor replay](references/sensor-replay.md).
+
 Read [operations](references/operations.md) for desktop apps, browser engines, Simulator input,
-iOS web views, modes and troubleshooting. For a physical iPhone, read [physical device](references/physical-device.md):
-allow it by identifier, check focus in a screenshot before typing, and confirm each result in a new screenshot. Use only the target the user requested; confirm the
+iOS web views, modes and troubleshooting. For a physical iPhone, iPad or Apple Watch, read [physical device](references/physical-device.md):
+allow it by identifier, drive foreground apps with the signed XCTest runner (`xctestStart`…`xctestStop`), and confirm visual state with a fresh `screenshot` or `xctestDescribe` tree. Do not open or use Xcode Device Hub (its live screen sharing blanks physical cameras on iOS/iPadOS). Use only the target the user requested; confirm the
 result with a fresh tree or screenshot. Prefer a command, API or dedicated tool when available.
 For Simulator app launch, logs, test data and checking a change, use `simulator-pilot` with this
 server's `simulator` tool. Risky mutations require the user's task authorization.

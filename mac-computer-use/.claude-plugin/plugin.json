@@ -1,7 +1,7 @@
 {
   "name": "mac-computer-use",
-  "description": "Operate Mac apps, browser pages, iOS web views, physical iPhones and Apple Watch with the mac-cu MCP server. Use for desktop UI tasks without a better API or CLI, web view inspection, input and screenshots on a connected iPhone or paired Apple Watch, or mac-cu setup, modes and simulator preparation. Route iOS Simulator app launch, logs, test data and change verification through simulator-pilot.",
-  "version": "1.36.0",
+  "description": "Operate Mac apps, browser pages, iOS web views, and physical iPhones, iPads and Apple Watch with the mac-cu MCP server. Use for desktop UI tasks without a better API or CLI, web view inspection, XCTest UI automation, input and screenshots on connected iPhones, iPads or paired Apple Watch, or mac-cu setup, modes and simulator preparation. Route iOS Simulator app launch, logs, test data and change verification through simulator-pilot.",
+  "version": "1.38.0",
   "author": {
     "name": "KakaoTalk iOS Team"
   },

@@ -28,6 +28,7 @@ struct PhysicalDeviceInfo {
     var tunnelState: String? = nil
     var hardwareUDID: String? = nil
     var isAppleWatch = false
+    var isIPad = false
 }
 
 /// Whether PhysicalDeviceSession's in-process CoreDevice calls may run in this process.

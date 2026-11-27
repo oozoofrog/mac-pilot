@@ -73,11 +73,17 @@ struct PhysicalDisplayState: Equatable {
     var portraitPixels: CGSize?
     var nativePixels: CGSize?
     var watchPointsWithoutOrientation: CGSize?
+    var anyOrientationPoints: CGSize?
 
     static func primary(pixels: CGSize, scale: CGFloat, rotation: String?, orientation: String?) -> Self {
         guard pixels.width > 0, pixels.height > 0 else { return Self() }
         var state = Self(nativePixels: pixels)
-        guard rotation == "rot0", scale.isFinite, scale > 0, pixels.height > pixels.width else { return state }
+        guard scale.isFinite, scale > 0 else { return state }
+        let rotated = (rotation == "rot90" || rotation == "rot270") && pixels.height > pixels.width
+        state.anyOrientationPoints = rotated
+            ? CGSize(width: pixels.height / scale, height: pixels.width / scale)
+            : CGSize(width: pixels.width / scale, height: pixels.height / scale)
+        guard rotation == "rot0", pixels.height > pixels.width else { return state }
         let points = CGSize(width: pixels.width / scale, height: pixels.height / scale)
         if orientation == "portrait" {
             state.portraitPoints = points
@@ -89,7 +95,8 @@ struct PhysicalDisplayState: Equatable {
     }
 
     func points(for device: PhysicalDeviceInfo) -> CGSize? {
-        portraitPoints ?? (device.isAppleWatch ? watchPointsWithoutOrientation : nil)
+        if device.isIPad { return anyOrientationPoints }
+        return portraitPoints ?? (device.isAppleWatch ? watchPointsWithoutOrientation : nil)
     }
 }
 
@@ -436,9 +443,8 @@ private final class CoreDeviceRemote: PhysicalRemote {
 
     func supports(_ feature: String) -> Bool { device.supportsFeature(identifiedBy: feature) }
 
-    /// The requirements Xcode's Device Hub uses while it shows a device (its four unconditional states, no
-    /// capabilities); CoreDeviceService raises the tunnel for it and keeps it up while any assertion is held.
-    /// See docs/design/device-hub-connection-analysis.md.
+    /// Acquires a CoreDevice usage assertion with the four required device states so CoreDeviceService raises the
+    /// tunnel and keeps it up while the assertion is held.
     func acquireAssertion(reason: String) async throws -> PhysicalAssertion {
         let requirements = UsageAssertionRequirements(deviceStates: [.developerModeEnabledIfRequired, .coreDeviceServicesLoaded,
                                                                      .extendedDeviceInfoLoaded, .remoteServiceDiscoveryTrustedConnectivityAvailable],

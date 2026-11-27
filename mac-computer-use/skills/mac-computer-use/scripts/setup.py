@@ -200,14 +200,33 @@ def build_app() -> bool:
         print(built.stderr.strip(), file=sys.stderr)
         return False
     identity = signing_identity()
-    signed = subprocess.run(["codesign", "--force", "--sign", identity, "--identifier", BUNDLE_ID, str(temporary)],
-                            capture_output=True, text=True)
+    replay = HERE.parent / "sensor-replay"
+    helper = temporary / "Contents" / "Helpers" / "macpilot-sensor-replay"
+    helper.parent.mkdir(exist_ok=True)
+    built_helper = subprocess.run(
+        ["swiftc", "-O", str(replay / "Sources/MacPilotSensorReplay/SensorReplay.swift"),
+         str(HERE / "mac-cu-src/SimulatorPreparation.swift"),
+         str(replay / "Tools/SensorReplayStage.swift"), str(replay / "Tools/main.swift"),
+         "-o", str(helper)],
+        capture_output=True, text=True,
+    )
+    if built_helper.returncode != 0:
+        print(built_helper.stderr.strip(), file=sys.stderr)
+        return False
+
+    def sign_bundle(signer):
+        nested = subprocess.run(["codesign", "--force", "--sign", signer, str(helper)], capture_output=True, text=True)
+        if nested.returncode != 0:
+            return nested
+        return subprocess.run(["codesign", "--force", "--sign", signer, "--identifier", BUNDLE_ID, str(temporary)],
+                              capture_output=True, text=True)
+
+    signed = sign_bundle(identity)
     if signed.returncode != 0 and identity != "-":
         # The key was refused (keychain prompt) or the certificate is out of date: an ad-hoc signature still runs.
         print(f"Could not sign with the Apple Development identity ({signed.stderr.strip()}); signing ad-hoc.")
         identity = "-"
-        signed = subprocess.run(["codesign", "--force", "--sign", identity, "--identifier", BUNDLE_ID, str(temporary)],
-                                capture_output=True, text=True)
+        signed = sign_bundle(identity)
     if signed.returncode != 0:
         print(signed.stderr.strip(), file=sys.stderr)
         return False

@@ -86,7 +86,7 @@ plugin.
 ## What's inside
 
 - `SKILL.md`: the instructions the agent follows
-- `scripts/mac-cu-src/`: the MCP server (tools `get_app_state`, `act`, `browser`, `simulator`, `webinspector` and `decide`), and the
+- `scripts/mac-cu-src/`: the MCP server (tools `get_app_state`, `act`, `browser`, `simulator`, `webinspector`, `device`, `sensor_replay` and `decide`), and the
   native messaging host of the Chrome extension (the same program; it answers only mac-cu itself, and the
   extension runs only the protocol commands the browser tool needs)
 - `chrome-extension/`: the mac-cu Chrome extension (the browser tool with `"engine": "extension"`)

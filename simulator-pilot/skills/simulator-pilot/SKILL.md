@@ -10,6 +10,7 @@ iOS 시뮬레이터 작업의 입구다. CLI는 Xcode의 Swift로 빌드하고 �
 | 도구 | 맡는 일 |
 |---|---|
 | mac-cu `simulator` 도구 (`mac-computer-use` 플러그인) | 화면 요소 읽기(`describe`, `wait`), 탭·스와이프·최대 세 손가락 제스처(`gesture`)·입력·키·버튼·붙여넣기, 스크린샷 |
+| mac-cu `sensor_replay` 도구 (`mac-computer-use` 플러그인) | `MacPilotSensorReplay`를 링크한 테스트 앱에 마이크·카메라·모션·위치·운동 타임라인 픽스처 스테이징 |
 | `sim-pilot` CLI (이 스킬의 `tool/sim-pilot.swift`) | 스킴 상태, 빌드·설치·실행, os_log·콘솔 로그, 테스트 사진 넣기, 이 기기에서 되는 기기 동작 표(`caps`) |
 | `xcrun simctl` | 부팅, 위치, 권한, 푸시, 화면 모드, 상태 막대 |
 | `xcrun devicectl` (Xcode 27 이상) | Face ID 등록·인증, 위치 경로 이동, 회전, 화면 녹화, 메모리 경고, 손쉬운 사용·VoiceOver |
@@ -54,6 +55,7 @@ xcodebuild -version | head -1                    # mac-cu simulator 도구는 Xc
 | "카톡 실행해 줘", "로그 보여 줘", "AccountList 로그만", "어떤 스킴 깔려 있어?" | [launch-and-log.md](references/launch-and-log.md) |
 | "설정 들어가서 다크 모드 켜 줘", "이 버튼 눌러 봐", "스크린샷" | [drive.md](references/drive.md) |
 | "사진 50장 넣어 줘", "위치를 판교로", "알림 권한 허용해 둬", "푸시 보내 봐" | [test-data.md](references/test-data.md) |
+| "마이크·카메라·걸음수·운동 센서 픽스처 재생해 줘" (`MacPilotSensorReplay` 테스트 앱) | [test-data.md](references/test-data.md)의 "앱 내 센서 타임라인 재생" |
 | "Face ID 성공시켜 줘", "가로로 돌려 줘", "화면 녹화해 줘", "메모리 경고 보내 봐", "흔들어 봐", "경로 따라 이동" | [test-data.md](references/test-data.md)의 "기기 동작 흉내" |
 | "고친 거 앱에서 되는지 봐 줘", "이 수정 실제로 확인해 줘" | [verify.md](references/verify.md) |
 | "샌드박스 계정 가입해 줘", "테스트 번호로 로그인" | 프로젝트의 계정 가입·로그인 절차를 확인한다 (이 Plugin에는 포함되지 않음) |

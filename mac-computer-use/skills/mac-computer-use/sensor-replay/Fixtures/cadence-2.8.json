@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "events": [
+    { "offsetMs": 0, "motion": { "steps": 0 } },
+    { "offsetMs": 10000, "motion": { "steps": 28 } },
+    { "offsetMs": 70000, "motion": { "steps": 196 } }
+  ]
+}

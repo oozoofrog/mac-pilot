@@ -77,6 +77,36 @@ try:
     assert chosen == FIRST and "NOSUCHTEAM" in printed, "unknown variable team: first identity, with a note"
     assert choose([FIRST, SECOND], app=False)[0] == FIRST, "nothing to follow: first identity (earlier behavior)"
     assert choose([SECOND, FIRST], app=False)[0] == SECOND, "nothing to follow: list order decides"
+
+    # Helper build failure returns False and prints stderr instead of raising CalledProcessError.
+    with tempfile.TemporaryDirectory(prefix="mac-cu-helper-fail-") as folder:
+        temp_bundle = Path(folder) / "mac-cu.app"
+        old_bundle, old_icon, old_view, old_run_swift = (
+            setup.BUNDLE, setup.build_app_icon, setup.build_view_capture_resources, setup.run_swift
+        )
+        try:
+            setup.BUNDLE = temp_bundle
+            setup.build_app_icon = lambda _resources: True
+            setup.build_view_capture_resources = lambda _dest: {}
+            setup.run_swift = lambda cmd, **_kw: subprocess.CompletedProcess(cmd, 0, "", "")
+
+            def fail_helper(command, **kwargs):
+                if command[0] == "security":
+                    return subprocess.CompletedProcess(command, 0, "0 valid identities found\n", "")
+                if command[0] == "swiftc":
+                    return subprocess.CompletedProcess(command, 1, "", "helper compile error: bad symbol\n")
+                raise AssertionError(f"unexpected command after helper failure: {command}")
+
+            setup.subprocess.run = fail_helper
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                ok = setup.build_app()
+            assert ok is False and "helper compile error: bad symbol" in err.getvalue(), (ok, err.getvalue())
+        finally:
+            setup.BUNDLE = old_bundle
+            setup.build_app_icon = old_icon
+            setup.build_view_capture_resources = old_view
+            setup.run_swift = old_run_swift
 finally:
     setup.subprocess.run = original
 print("Signing identity checks passed: none, one, installed team, variable team, fallbacks.")

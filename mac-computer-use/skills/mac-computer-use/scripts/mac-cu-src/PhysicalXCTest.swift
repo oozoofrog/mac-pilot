@@ -114,7 +114,11 @@ final class PhysicalXCTestSession {
             let tail = String(decoding: try log.readToEnd() ?? Data(), as: UTF8.self)
             let lines = tail.split(separator: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
             let reason = lines.last { $0.localizedCaseInsensitiveContains("error:") } ?? lines.last
-            return reason.map { exit + " " + $0.suffix(400) } ?? exit
+            let detail = reason.map { exit + " " + $0.suffix(400) } ?? exit
+            if tail.localizedCaseInsensitiveContains("enabling automation mode") {
+                return detail + " Approve the 'Enable UI Automation' Touch ID, Face ID or passcode prompt on the device (or enable Settings > Developer > Enable UI Automation), then retry xctestStart."
+            }
+            return detail
         } catch { return exit }
     }
 
@@ -138,7 +142,7 @@ final class PhysicalXCTestSession {
         } else if !ready {
             guard let wired = try Usbmux.devices().first(where: { $0.isUSB && $0.serial.caseInsensitiveCompare(hardwareUDID) == .orderedSame }) else {
                 interrupt()
-                throw ToolError("The selected USB iPhone disconnected.")
+                throw ToolError("The selected USB device disconnected.")
             }
             if let candidate = try Usbmux.connectIfListening(wired, port: port) {
                 do {

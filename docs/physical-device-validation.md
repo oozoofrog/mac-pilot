@@ -104,15 +104,15 @@ export TMPDIR="$D" CLANG_MODULE_CACHE_PATH="$D/cache" PYTHONDONTWRITEBYTECODE=1
 { sed -n '1,/^@main struct HIDTransportSelfcheck/ p' mac-computer-use/tests/hid-transport-selfcheck.swift | sed '$d'; sed -n '/^final class HIDLink {/,/^var hidLinks:/p' "$S/Simulator.swift" | sed '$d'; sed -n '/^let usKeys:/,/^\/\/ MARK: - Pasteboard/p' "$S/Simulator.swift" | sed '$d'; sed -n '/^struct ShellResult /,/^struct SimulatorScreen /p' "$S/Simulator.swift" | sed '$d'; sed -n '/^func jpegBase64(/,/^func point(/p' "$S/Simulator.swift" | sed '$d' | sed 's/, guides: \[GuideBox\]? = nil//' | sed 's/let picture = guides.map.*$/let picture = scaled/' | sed 's/guides == nil ? 0.7 : 0.8/0.7/'; } > "$D/stubs.swift"
 sed 's/remote.send(message)/observedSend(remote, message)/' "$S/Device.swift" > "$D/Device.swift"
 FLAGS=$(python3 mac-computer-use/skills/mac-computer-use/scripts/native_build.py --emit-stub-modules "$D/modules")  # bash; zsh: ${=FLAGS}
-swiftc -parse-as-library $FLAGS "$D/stubs.swift" "$S/SimulatorGestureHID.swift" "$S/PhysicalDeviceLink.swift" "$S/PhysicalDeviceSession.swift" "$D/Device.swift" "$S/DeviceHubView.swift" mac-computer-use/tests/device-live-harness.swift -o "$D/device-live-harness"
+swiftc -parse-as-library $FLAGS "$D/stubs.swift" "$S/SimulatorGestureHID.swift" "$S/PhysicalDeviceLink.swift" "$S/PhysicalDeviceSession.swift" "$D/Device.swift" mac-computer-use/tests/device-live-harness.swift -o "$D/device-live-harness"
 ID=<identifier from device list>
 python3 mac-computer-use/tests/check-device-live.py --device "$ID" --build-dir "$D" --action audit
 python3 mac-computer-use/tests/check-device-live.py --device "$ID" --build-dir "$D" --action screenshot --image "$D/start.jpg"
 eyebuild rm device-live-check
 ```
 
-`check-device-live.py` also accepts `list`, `allow`, `release`, `tap`, `swipe`, `button`, `key`, `type` and `view`
-with `--args '<JSON>'`. The offline checks of the same code run in `scripts/check.sh`.
+`check-device-live.py` also accepts `list`, `allow`, `release`, `tap`, `swipe`, `button`, `key` and `type`
+with `--args '<JSON>'` (`view` / Device Hub was removed in mac-computer-use 1.38.0 in favor of XCTest UI automation). The offline checks of the same code run in `scripts/check.sh`.
 
 ## Network run, 2026-11-14
 

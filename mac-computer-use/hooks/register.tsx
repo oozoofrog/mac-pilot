@@ -42,6 +42,8 @@ const TOOLS: Record<string, string> = {
   browser: '브라우저',
   simulator: '시뮬레이터',
   webinspector: '웹 인스펙터',
+  device: '실기기',
+  sensor_replay: '센서 재생',
   decide: '판단',
 }
 
@@ -60,6 +62,10 @@ function describe(tool: string, input: Record<string, unknown>): Pick<Call, 'tar
       return { target: text('device') || '시뮬레이터', detail: [text('action'), text('target')].filter(Boolean).join(' '), steps: 0 }
     case 'webinspector':
       return { target: text('page') || '웹뷰', detail: text('action'), steps: 0 }
+    case 'device':
+      return { target: text('device') || '실기기', detail: text('action'), steps: 0 }
+    case 'sensor_replay':
+      return { target: text('app') || text('device'), detail: text('platform'), steps: 0 }
     default:
       return { target: text('app') || text('page'), detail: text('pick') || '질문', steps: 0 }
   }

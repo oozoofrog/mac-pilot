@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "events": [
+    {
+      "offsetMs": 0,
+      "motion": {
+        "steps": 5,
+        "accelerationG": {
+          "x": 1,
+          "y": 0,
+          "z": 0
+        }
+      }
+    },
+    {
+      "offsetMs": 1,
+      "workout": {
+        "heartRateBPM": 120,
+        "phase": "running"
+      }
+    },
+    {
+      "offsetMs": 1,
+      "location": {
+        "latitude": 37.5,
+        "longitude": 127
+      }
+    },
+    {
+      "offsetMs": 2,
+      "microphone": {
+        "sampleRate": 16000,
+        "pcmS16LE": "AQD//w=="
+      }
+    },
+    {
+      "offsetMs": 3,
+      "camera": {
+        "imageData": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+      }
+    }
+  ]
+}

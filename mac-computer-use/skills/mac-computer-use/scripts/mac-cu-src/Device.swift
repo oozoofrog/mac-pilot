@@ -11,8 +11,6 @@ struct DeviceBackend {
     /// Opens the connections for these HID features (digitizer, button); nil: open serves every action.
     var openFeatures: ((UUID, CGSize, Set<String>) throws -> HIDLink)? = nil
     var cancelled: () -> Bool = { false }
-    /// Opens Xcode's Device Hub at the device (id, name, focus) and returns what the user does next; nil: not available.
-    var view: ((UUID, String, Bool) throws -> String)? = nil
     /// Ends cached device sessions (nil: every one), releasing what they hold: release, or allowing another device.
     var endSessions: (UUID?) -> Void = { _ in }
     /// A line for list about how screenshots and state are read, when it matters (fallback mode).
@@ -38,7 +36,7 @@ final class DeviceTool {
     /// a paired device on the network is accepted, because its CoreDevice tunnel is raised on first use.
     static func connectionProblem(_ device: PhysicalDeviceInfo) -> String? {
         if let pairing = device.pairingState, pairing != "paired" {
-            if device.isAppleWatch { return "pair the companion iPhone in Xcode Device Hub, then trust this Mac on the Apple Watch" }
+            if device.isAppleWatch { return "pair the companion iPhone in Xcode (Window > Devices and Simulators), then trust this Mac on the Apple Watch" }
             return "the device is not paired with this Mac (\(pairing)). Connect it with a USB cable, unlock it and tap Trust, then retry"
         }
         if device.connectionState == "Connected" || device.tunnelState == "connected" { return nil }
@@ -47,11 +45,22 @@ final class DeviceTool {
             "with Wi-Fi on the same network as this Mac (paired before over USB), then retry"
     }
 
+    func checkFixtureAccess(_ id: UUID) throws {
+        guard allowed == id else { throw ToolError("Allow this physical device first.") }
+        guard let target = try backend.list().first(where: { $0.identifier == id }) else { throw PhysicalDeviceError.noSuchDevice(id.uuidString) }
+        if let problem = Self.connectionProblem(target) { throw PhysicalDeviceError.unavailable(problem) }
+        let locked: Bool
+        // The Watch's in-process check is slower but exact; without in-process CoreDevice use the devicectl fallback.
+        if target.isAppleWatch, let readLock = backend.xctestLocked, let state = try? readLock(target) { locked = state }
+        else { locked = try backend.locked(id) }
+        guard !locked else { throw ToolError("Unlock the selected device before staging a fixture.") }
+    }
+
     @discardableResult
     func checkXCTestAccess(_ id: UUID) throws -> PhysicalDeviceInfo {
         guard let selection, selection.identifier == id else { throw ToolError("Allow this physical device first.") }
         guard selection.isAppleWatch ? selection.pairingState == "paired" : selection.transport == "wired" else {
-            throw ToolError("Select a paired Apple Watch or a USB iPhone for XCTest.")
+            throw ToolError("Select a paired Apple Watch or a USB iPhone or iPad for XCTest.")
         }
         guard let readLock = backend.xctestLocked else { throw ToolError("The in-process XCTest lock check is unavailable.") }
         guard try !readLock(selection) else { throw ToolError("Unlock the selected device before using XCTest.") }
@@ -65,16 +74,14 @@ final class DeviceTool {
             let devices = try backend.list()
             return text((devices.isEmpty ? "No physical devices found." : devices.map {
                 "\($0.identifier.uuidString) | \($0.name) | \($0.connectionState ?? "unknown") | \($0.transport.map(Self.transportName) ?? "unknown transport") | \($0.osVersion ?? "unknown OS") | \($0.identifier == allowed ? "allowed" : "not allowed")"
-            }.joined(separator: "\n")) + (devices.isEmpty ? "" : "\nView the screen in Xcode Device Hub: device action view.") +
-                        (backend.status().map { "\n" + $0 } ?? ""))
+            }.joined(separator: "\n")) + (backend.status().map { "\n" + $0 } ?? ""))
         }
-        // window: the earlier name of view.
-        let known = ["allow", "release", "screenshot", "tap", "swipe", "key", "type", "button", "view", "window"]
+        let known = ["allow", "release", "screenshot", "tap", "swipe", "key", "type", "button"]
         guard known.contains(action) else { throw ToolError("Unknown device action: \(action).") }
         if action == "release" {
             selection = nil
             backend.endSessions(nil)
-            return text("Physical device permission released. Device Hub, if open, stays open; mac-cu never closes it.")
+            return text("Physical device permission released.")
         }
         guard let value = args["device"] as? String, let id = UUID(uuidString: value) else {
             throw ToolError("Use a physical device identifier (UUID), never its name. Run device list, then device allow with device set to that identifier.")
@@ -88,18 +95,19 @@ final class DeviceTool {
         }
         guard allowed == id else { throw ToolError("Device \(id.uuidString) is not allowed. Run device allow with device set to this identifier first.") }
         guard let found = try backend.list().first(where: { $0.identifier == id }) else { throw PhysicalDeviceError.noSuchDevice(value) }
-        if action == "view" || action == "window" {
-            if args["close"] as? Bool == true { return text("mac-cu does not close Device Hub; close its window there.") }
-            guard let view = backend.view else { throw ToolError("Opening Device Hub is not available in this build.") }
-            return text(try view(id, found.name, args["focus"] as? Bool ?? false))
+        if found.isIPad && action != "screenshot" {
+            throw ToolError("iPad uses XCTest (xctestStart…xctestStop) for UI automation, screenshot, and sensor_replay; raw HID input is unavailable.")
         }
         if let problem = Self.connectionProblem(found) { throw PhysicalDeviceError.unavailable(problem) }
         if found.isAppleWatch && !["screenshot", "tap", "swipe"].contains(action) {
-            throw ToolError("Apple Watch supports screenshot, tap and swipe. Keyboard and iPhone buttons are unavailable.")
+            throw ToolError("Apple Watch supports screenshot, tap and swipe, plus XCTest. Keyboard and iPhone buttons are unavailable.")
         }
         let size = try backend.display(found)
         if action == "screenshot" {
-            return ["content": [["type": "text", "text": "Portrait screen: \(Int(size.width))×\(Int(size.height)) points; image pixels are input coordinates."], ["type": "image", "data": try backend.screenshot(id, size), "mimeType": "image/jpeg"]]]
+            let caption = found.isIPad
+                ? "iPad screen: \(Int(size.width))×\(Int(size.height)) points. Use XCTest actions (xctestDescribe, xctestTap, xctestType) for iPad input."
+                : "Portrait screen: \(Int(size.width))×\(Int(size.height)) points; image pixels are input coordinates."
+            return ["content": [["type": "text", "text": caption], ["type": "image", "data": try backend.screenshot(id, size), "mimeType": "image/jpeg"]]]
         }
         if try backend.locked(id) { throw ToolError("Device is locked or requires a passcode. Unlock it yourself and retry; mac-cu never enters a passcode.") }
         func coordinate(_ x: String, _ y: String) throws -> CGPoint {
@@ -303,7 +311,7 @@ private func physicalBackend() -> DeviceBackend {
         return devices.compactMap { item -> PhysicalDeviceInfo? in
             let properties = item["properties"] as? [String: Any]
             let hardware = (properties?["hardware"] as? [String: Any]) ?? (item["hardwareProperties"] as? [String: Any])
-            guard let kind = hardware?["deviceType"] as? String, ["iPhone", "appleWatch"].contains(kind),
+            guard let kind = hardware?["deviceType"] as? String, ["iPhone", "iPad", "appleWatch"].contains(kind),
                   hardware?["reality"] as? String == "physical",
                   let value = item["identifier"] as? String, let id = UUID(uuidString: value) else { return nil }
             let connection = (properties?["connection"] as? [String: Any]) ?? (item["connectionProperties"] as? [String: Any])
@@ -311,12 +319,13 @@ private func physicalBackend() -> DeviceBackend {
             let transport = connection?["transportType"] as? String, tunnel = connection?["tunnelState"] as? String
             sessions.noteTransport(id, transport)
             let own = known[id]
+            let system = ["appleWatch": "watchOS", "iPad": "iPadOS"][kind] ?? "iOS"
             return PhysicalDeviceInfo(identifier: id, name: own?.name ?? (device?["name"] as? String ?? ""), model: hardware?["marketingName"] as? String,
-                                      osVersion: own?.osVersion ?? (device?["osVersionNumber"] as? String).map { (kind == "appleWatch" ? "watchOS " : "iOS ") + $0 },
+                                      osVersion: own?.osVersion ?? (device?["osVersionNumber"] as? String).map { system + " " + $0 },
                                       transport: transport,
                                       connectionState: own?.connectionState ?? (tunnel == "connected" ? "Connected" : tunnel.map { "tunnel \($0)" }),
                                       pairingState: connection?["pairingState"] as? String, tunnelState: tunnel, hardwareUDID: hardware?["udid"] as? String,
-                                      isAppleWatch: kind == "appleWatch")
+                                      isAppleWatch: kind == "appleWatch", isIPad: kind == "iPad")
         }
     }, locked: { id in
         // The rule is that mac-cu never enters a passcode. A device without a passcode reports false even
@@ -347,9 +356,7 @@ private func physicalBackend() -> DeviceBackend {
         try openInput(id, size, [PhysicalFeature.hid])
     }, openFeatures: { id, size, features in
         try openInput(id, size, features)
-    }, cancelled: { currentSession?.requestCancelled ?? false }, view: { id, name, focus in
-        try deviceHubView(id, name: name, focus: focus, launcher: .system)
-    }, endSessions: { sessions.end($0) }, status: {
+    }, cancelled: { currentSession?.requestCancelled ?? false }, endSessions: { sessions.end($0) }, status: {
         sessions.unavailableReason.map { "In-process CoreDevice is off (\($0)); screenshots and device state use devicectl (slower)." }
     }, xctestLocked: { device in
         guard let session = sessions.session(device.identifier) else { throw ToolError("XCTest requires the in-process CoreDevice lock check.") }

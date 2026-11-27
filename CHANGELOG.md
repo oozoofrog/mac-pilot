@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.7.0 — 2026-11-28
+
+mac-computer-use 1.38.0, simulator-pilot 1.10.1.
+
+- `mac-computer-use`에서 Xcode Device Hub(`device`의 `view` 동작·`focus` 인자·`DeviceHubView.swift`)를 배제하고, 실물 iPhone·iPad(USB)와 페어링된 Apple Watch를 개발 서명한 `MacPilot Runner`의 XCTest(`XCUIApplication`) UI 자동화(`xctestStart`…`xctestStop`)와 단일 프레임 `screenshot`으로 다룬다. 원격 화면 공유(`avconferenced`)를 열지 않으므로 iPadOS·iOS 실기기 카메라 픽셀 버퍼가 마스킹되지 않으며, 가로·세로 방향 iPad에서도 `screenshot`과 XCTest 요소 조회·탭·입력이 동작한다.
+- 동적 링크 Swift 패키지 `MacPilotSensorReplay`를 임베드한 iOS·watchOS 테스트 앱에 `sensor_replay` 도구로 센서 타임라인 픽스처를 전달한다. 마이크 PCM, 카메라 프레임, 모션, 위치, 운동 이벤트를 단일 단조 시계 기준으로 순서대로 재생하며, 저장한 바이트를 원본과 대조한 뒤에만 `.ready` 마커를 공개한다.
+- `SensorReplay.receiveNext()`는 수령한 픽스처와 마커를 메모리로 읽은 뒤 `Documents/`에서 즉시 삭제해 실기기 백업 대상 파일이 누적되지 않도록 하며, 직접 정리할 수 있도록 `SensorReplay.remove(id:)`를 제공한다. 다른 에이전트 세션이 점유 중인 시뮬레이터에는 스테이징을 거절하고, 빈 시뮬레이터 스테이징은 세션 사용 기록과 인계 알림에 반영한다.
+- 실측 범위는 실물 iPad Air(4세대, iPadOS 27.2.1; USB XCTest UI 자동화·단일 프레임 스크린샷·실시간 하드웨어 카메라 및 5채널 센서 재생)와 부팅된 iPhone 17e 시뮬레이터다. watchOS는 패키지 타입체크(`watchos`·`watchsimulator` SDK)와 잠금 상태 폴백 경로만 검증했으며, 실물 Apple Watch에서의 센서 재생은 아직 검증하지 않았다.
+
 ## 1.6.0 — 2026-11-21
 
 mac-computer-use 1.36.0, simulator-pilot 1.10.0.

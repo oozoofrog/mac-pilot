@@ -282,9 +282,9 @@ let tools: [[String: Any]] = [
     ],
     [
         "name": "device",
-        "description": "Physical iPhone and Apple Watch. For a paired Apple Watch, use its own UUID with allow, screenshot, tap or swipe. Hardware keyboard and physical buttons are iPhone-only. For the prepared iPhone USB or paired watchOS XCTest runner, allow this device in this MCP connection, then xctestStart with an optional foreground app bundle ID, poll xctestStatus, use xctestPing, xctestDescribe, xctestWait, xctestTap, xctestType or explicitly xctestActivate, then xctestStop. Omitting app enables transport checks only. Run list, then explicitly allow a single device by its UUID identifier; names are never accepted for selection. Agent input (tap, swipe, key, type, button) is injected into the device over CoreDevice HID and never uses the Mac's mouse, keyboard or window activation. Input is refused while the device requires a passcode: unlock it yourself, mac-cu never enters one. Landscape and unallowed devices are refused. Coordinates are portrait screen points from the top left, matching pixels in the resized screenshot. screenshot returns one still frame of the device screen and is allowed while locked. type assumes a US English hardware keyboard; unsupported characters are refused. Devices connected by USB cable or paired and reachable on the same network both work; list shows the transport. The user watches the live screen in Xcode's Device Hub: view opens Device Hub at the allowed device (without bringing it to the front unless focus is true); a physical device's screen starts only when the user clicks View Screen there. mac-cu never clicks in, controls or closes Device Hub. If CoreDevice cannot be used in process, screenshots fall back to devicectl (slower) and list says so.",
+        "description": "Physical iPhone, iPad and Apple Watch. Operate apps with the signed MacPilot Runner over XCTest UI automation (XCUIApplication): allow the device UUID in this MCP connection, call xctestStart with an optional foreground app bundle ID (USB iPhone/iPad or paired watchOS), poll xctestStatus until ready, then use xctestActivate, xctestDescribe, xctestWait, xctestTap, xctestType or xctestPing, and end with xctestStop. Omitting app runs transport checks only. screenshot captures one still frame on iPhone, iPad (portrait or landscape) and Apple Watch without starting screen sharing, and is allowed while locked. For sensor fixtures, allow the device and call sensor_replay. On portrait iPhone and Apple Watch, coordinate tap/swipe (and iPhone US-layout key/type/button) are also available over CoreDevice HID without using the Mac's mouse, keyboard or windows; iPad input uses XCTest actions. Input is refused while the device requires a passcode: unlock it yourself, mac-cu never enters one. Run list first and select a single device by its UUID identifier, never by name. mac-cu never opens or uses Xcode Device Hub. If CoreDevice cannot be used in process, screenshots and lock checks fall back to devicectl (slower) and list says so.",
         "inputSchema": ["type": "object", "required": ["action"], "properties": [
-            "action": ["type": "string", "enum": ["list", "allow", "release", "screenshot", "tap", "swipe", "key", "type", "button", "view"] + PhysicalXCTestSession.actions.sorted()],
+            "action": ["type": "string", "enum": ["list", "allow", "release", "screenshot", "tap", "swipe", "key", "type", "button"] + PhysicalXCTestSession.actions.sorted()],
             "app": ["type": "string", "description": "xctestStart: optional target bundle ID. Only xctestActivate requests app launch or activation."],
             "target": ["type": "string", "description": "xctestWait, xctestType and xctestTap: exact accessibility identifier."],
             "label": ["type": "string", "description": "xctestWait, xctestType and xctestTap: exact accessibility label, mutually exclusive with target. Requires an updated runner."],
@@ -292,7 +292,6 @@ let tools: [[String: Any]] = [
             "x": ["type": "number"], "y": ["type": "number"], "to_x": ["type": "number"], "to_y": ["type": "number"],
             "seconds": ["type": "number"], "text": ["type": "string"], "key": ["type": "string"],
             "button": ["type": "string", "enum": ["home", "lock", "side", "volumeUp", "volumeDown"]],
-            "focus": ["type": "boolean", "description": "view: bring Device Hub to the front (default false)."],
         ]],
     ],
     [
@@ -357,6 +356,20 @@ let tools: [[String: Any]] = [
             ],
             "required": ["action"],
         ],
+    ],
+    [
+        "name": "sensor_replay",
+        "description": "Stage a sensor timeline in a test app that links MacPilotSensorReplay. Returns the fixture UUID after readback. The app chooses when to play. For physical devices, first allow the device in this connection.",
+        "inputSchema": [
+            "type": "object",
+            "properties": [
+                "platform": ["type": "string", "enum": ["device", "simulator"]],
+                "device": ["type": "string", "description": "Exact CoreDevice UUID or booted simulator UDID."],
+                "app": ["type": "string", "description": "Bundle identifier of the instrumented app."],
+                "fixture": ["type": "string", "description": "Absolute local path of the version 1 sensor replay JSON file."]
+            ],
+            "required": ["platform", "device", "app", "fixture"]
+        ]
     ],
     [
         "name": "webinspector",
@@ -474,8 +487,9 @@ func noScreenshot(_ other: String) -> String { requestScreenRecording() ? other 
 func callTool(_ name: String, _ arguments: [String: Any]) -> [String: Any] {
     // The simulator tool sends HID events to the simulator, and webinspector uses Web Inspector sockets:
     // they need no Accessibility permission.
-    if name == "simulator" || name == "webinspector" || name == "device" {
+    if ["simulator", "webinspector", "device", "sensor_replay"].contains(name) {
         do {
+            if name == "sensor_replay" { return try stageSensorReplay(arguments) }
             if name == "device" { return try physicalAgentDeviceTool(arguments) }
             return try name == "simulator" ? simulatorTool(arguments) : webInspectorTool(arguments)
         } catch let error as ToolError {
