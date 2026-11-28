@@ -6,6 +6,7 @@
     "name": "KakaoTalk iOS Team"
   },
   "skills": "./skills/",
+  "hooks": { "hooks": {} },
   "repository": "https://github.com/oozoofrog/mac-pilot",
   "interface": {
     "displayName": "Mac Computer Use",

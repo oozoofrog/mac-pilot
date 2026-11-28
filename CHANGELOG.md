@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Codex가 Claude Code 전용 훅 설정을 읽으면서 시작할 때 경고를 표시하던 문제를 수정했다.
+
 ## 1.6.0 — 2026-11-21
 
 mac-computer-use 1.36.0, simulator-pilot 1.10.0.
